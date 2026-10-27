@@ -23,7 +23,8 @@ describe('resolveSettings', () => {
 		const repo = RepoConfigSchema.parse({settings: {gitTracking: 'track-all'}});
 		const {values, sources} = resolveSettings(global, repo);
 		expect(values).toMatchObject({gitTracking: 'track-all', maxParallel: 4, autoRun: true});
-		expect(sources).toEqual({gitTracking: 'repo', maxParallel: 'global', autoRun: 'default', orchestrator: 'default'});
+		expect(sources).toMatchObject({gitTracking: 'repo', maxParallel: 'global', autoRun: 'default', orchestrator: 'default', approvals: 'default'});
+		expect(values).toMatchObject({approvals: 'ask', runBudget: null, taskTimeout: null, orchestratorModel: null});
 	});
 
 	it('keeps an explicit null (unlimited) from the repo over a global limit', () => {
@@ -39,6 +40,16 @@ describe('parseSettingValue', () => {
 		expect(parseSettingValue('maxParallel', 'unlimited')).toBeNull();
 		expect(parseSettingValue('maxParallel', '6')).toBe(6);
 		expect(parseSettingValue('gitTracking', 'share-team')).toBe('share-team');
+	});
+
+	it('parses budgets, time limits, approvals and model names', () => {
+		expect(parseSettingValue('runBudget', '$2.50')).toBe(2.5);
+		expect(parseSettingValue('runBudget', 'none')).toBeNull();
+		expect(parseSettingValue('taskTimeout', '20')).toBe(20);
+		expect(parseSettingValue('approvals', 'block')).toBe('block');
+		expect(parseSettingValue('orchestratorModel', 'opus')).toBe('opus');
+		expect(parseSettingValue('orchestratorModel', 'default')).toBeNull();
+		expect(() => parseSettingValue('runBudget', '-1')).toThrow();
 	});
 
 	it('rejects bad values', () => {

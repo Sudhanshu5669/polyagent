@@ -81,7 +81,7 @@ export class EmployeeChat {
 		this.changed();
 	}
 
-	async send(employee: Employee, binary: string, cwd: string, prompt: string): Promise<void> {
+	async send(employee: Employee, binary: string, cwd: string, prompt: string, options: {approvalArgs?: string[]} = {}): Promise<void> {
 		if (this.working) throw new Error(`${employee.name} is still working`);
 
 		// A session belongs to one provider; switching provider starts fresh.
@@ -107,6 +107,7 @@ export class EmployeeChat {
 				sessionId: this.session?.sessionId,
 				model: employee.model,
 				permissions: employee.permissions,
+				approvalArgs: options.approvalArgs,
 			},
 			event => {
 				if (event.type === 'session') {

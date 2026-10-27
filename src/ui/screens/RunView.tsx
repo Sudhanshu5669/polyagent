@@ -1,4 +1,5 @@
-import {Box, Text, useAnimation, useInput, useWindowSize} from 'ink';
+import {Box, Text, useAnimation, useWindowSize} from 'ink';
+import {useKeys} from '../input.js';
 import {useEffect, useMemo, useState, useSyncExternalStore, type ReactNode} from 'react';
 import type {Employee} from '../../core/employees.js';
 import {PROVIDERS} from '../../core/providers.js';
@@ -11,6 +12,7 @@ import {RoleTag} from '../components/RoleTag.js';
 import {Spinner} from '../components/Spinner.js';
 import {TextInput} from '../components/TextInput.js';
 import {buildRows, Viewport} from '../components/Transcript.js';
+import {usePendingApprovals} from '../approvalsContext.js';
 import {icons, theme} from '../theme.js';
 
 type Mode = 'overview' | 'watch' | 'tasks';
@@ -18,6 +20,8 @@ type Mode = 'overview' | 'watch' | 'tasks';
 interface Props {
 	run: RunEngine;
 	onBack: () => void;
+	/** Continue a run that was interrupted when polyagent last quit. */
+	onContinue: () => void;
 }
 
 export function formatElapsed(ms: number): string {
@@ -40,9 +44,10 @@ const TASK_ICON: Record<TaskStatus, ReactNode> = {
 type EmployeeStatus = {label: string; icon: ReactNode; task?: Task; since?: number};
 
 /** What an employee is doing right now, from their tasks in this run. */
-function employeeStatus(employee: Employee, tasks: Task[]): EmployeeStatus {
+function employeeStatus(employee: Employee, tasks: Task[], waitingOnYou = false): EmployeeStatus {
 	const mine = tasks.filter(t => t.assignee === employee.id);
 	const running = mine.find(t => t.status === 'running');
+	if (running && waitingOnYou) return {label: 'needs you', icon: <Text color={theme.warn}>⚑</Text>, task: running, since: running.startedAt};
 	if (running) return {label: 'working', icon: <Spinner />, task: running, since: running.startedAt};
 	const waiting = mine.find(t => t.status === 'ready' || t.status === 'blocked');
 	if (waiting) return {label: waiting.status === 'ready' ? 'queued' : 'waiting', icon: TASK_ICON.blocked, task: waiting};
@@ -52,7 +57,9 @@ function employeeStatus(employee: Employee, tasks: Task[]): EmployeeStatus {
 	return {label: 'idle', icon: <Text color={theme.muted}>{icons.dot}</Text>};
 }
 
-function orchestratorStatus(state: RunState): string {
+function orchestratorStatus(state: RunState, interrupted: boolean): string {
+	if (interrupted) return 'interrupted';
+	if (state.paused) return state.paused.reason === 'budget' ? 'paused: budget reached' : 'paused';
 	if (state.status === 'planning') return 'planning';
 	if (state.status === 'awaiting-approval') return 'waiting for your approval';
 	if (state.orchestrator.working) return 'reviewing';
@@ -60,8 +67,10 @@ function orchestratorStatus(state: RunState): string {
 	return 'waiting for employees';
 }
 
-export function RunView({run, onBack}: Props) {
+export function RunView({run, onBack, onContinue}: Props) {
 	useSyncExternalStore(run.subscribe, () => run.version);
+	const pending = usePendingApprovals();
+	const waitingOnYou = (id: string) => pending.some(r => r.agent === id);
 	// Ticks once a second for the clocks.
 	useAnimation({interval: 1000, isActive: !isFinished(run.state.status)});
 	const {columns, rows} = useWindowSize();
@@ -84,15 +93,18 @@ export function RunView({run, onBack}: Props) {
 	const agentEmployee = roster.find(e => e.id === agentId);
 
 	const width = columns - 4;
+	const interrupted = run.interrupted;
 	const finished = isFinished(state.status);
 	const awaiting = state.status === 'awaiting-approval';
 	const page = Math.max(1, rows - 12);
 
 	useEffect(() => setOffset(0), [agentId, mode]);
 
-	useInput((input, key) => {
+	useKeys((input, key) => {
 		const empty = draft.trim() === '';
 		if (key.ctrl && input === 't') return setMode(m => (m === 'tasks' ? 'overview' : 'tasks'));
+		if (key.ctrl && input === 'r' && interrupted) return onContinue();
+		if (key.ctrl && input === 'p' && !finished && !interrupted) return state.paused ? run.resume() : run.pause();
 		if (key.ctrl && input === 'o') return setDetails(d => !d);
 
 		if (mode === 'overview') {
@@ -136,7 +148,7 @@ export function RunView({run, onBack}: Props) {
 	const elapsed = formatElapsed((state.endedAt ?? Date.now()) - state.createdAt);
 	const right = (
 		<Text color={theme.muted}>
-			{finished ? state.status : `${counts.working} working · ${counts.waiting} waiting`} · {elapsed}
+			{finished ? state.status : interrupted ? 'interrupted' : state.paused ? 'paused' : `${counts.working} working · ${counts.waiting} waiting`} · {elapsed}
 			{state.costUsd > 0 ? ` · $${state.costUsd.toFixed(2)}` : ''}
 		</Text>
 	);
@@ -146,12 +158,24 @@ export function RunView({run, onBack}: Props) {
 			? [['tab', 'next agent'], ['↑↓ pgup pgdn', 'scroll'], ['ctrl+o', details ? 'less' : 'details'], ['ctrl+t', 'tasks'], ['esc', 'overview']]
 			: mode === 'tasks'
 				? [['↑↓', 'select'], ['ctrl+t', 'close'], ['esc', 'overview']]
-				: awaiting
-					? [['⏎', 'start the plan'], ['type', 'ask for changes'], ['ctrl+c', 'cancel run'], ['esc', 'dashboard']]
-					: [['↑↓', 'select'], ['⏎', 'watch'], ['ctrl+t', 'tasks'], ...(finished ? [] : ([['ctrl+c', 'stop run']] as Hint[])), ['esc', 'dashboard']];
+				: interrupted
+					? [['ctrl+r', 'continue this run'], ['↑↓', 'select'], ['⏎', 'watch'], ['ctrl+t', 'tasks'], ['esc', 'dashboard']]
+					: awaiting
+						? [['⏎', 'start the plan'], ['type', 'ask for changes'], ['ctrl+c', 'cancel run'], ['esc', 'dashboard']]
+						: [
+								['↑↓', 'select'],
+								['⏎', 'watch'],
+								['ctrl+t', 'tasks'],
+								...(finished ? [] : ([['ctrl+p', state.paused ? 'resume' : 'pause'], ['ctrl+c', 'stop run']] as Hint[])),
+								['esc', 'dashboard'],
+							];
 
 	const input = finished ? (
 		<Text color={theme.muted}>This run has ended.</Text>
+	) : interrupted ? (
+		<Text color={theme.warn}>
+			This run was interrupted when polyagent quit. Press <Text bold>ctrl+r</Text> to continue it.
+		</Text>
 	) : (
 		<TextInput
 			placeholder={mode === 'watch' && agentEmployee ? `Tell the orchestrator about ${agentEmployee.name}` : 'Tell the orchestrator something'}
@@ -165,7 +189,7 @@ export function RunView({run, onBack}: Props) {
 
 	if (mode === 'watch') {
 		const name = agentEmployee?.name ?? 'Orchestrator';
-		const task = agentEmployee ? employeeStatus(agentEmployee, state.tasks).task : undefined;
+		const task = agentEmployee ? employeeStatus(agentEmployee, state.tasks, waitingOnYou(agentEmployee.id)).task : undefined;
 		const height = Math.max(3, rows - 7);
 		const allRows = buildRows(run.logs[agentId] ?? [], name, agentEmployee?.role ?? 'orchestrator', width, details);
 		const clamped = Math.min(offset, Math.max(0, allRows.length - height));
@@ -245,14 +269,29 @@ export function RunView({run, onBack}: Props) {
 	// Overview
 	const tail = buildRows(run.logs[agentId] ?? [], agentEmployee?.name ?? 'Orchestrator', agentEmployee?.role ?? 'orchestrator', width - 2, false).slice(-3);
 	return (
-		<Frame title={title} right={right} hints={hints} notice={awaiting ? <Text color={theme.warn}>Review the plan below. ⏎ starts it; type to ask the orchestrator for changes.</Text> : undefined}>
+		<Frame
+			title={title}
+			right={right}
+			hints={hints}
+			notice={
+				awaiting ? (
+					<Text color={theme.warn}>Review the plan below. ⏎ starts it; type to ask the orchestrator for changes.</Text>
+				) : state.paused && !finished ? (
+					<Text color={theme.warn}>
+						{state.paused.reason === 'budget'
+							? `Paused at $${state.costUsd.toFixed(2)}: the run reached its budget. ctrl+p resumes and allows another budget's worth.`
+							: 'Paused: running tasks finish, nothing new starts. ctrl+p resumes.'}
+					</Text>
+				) : undefined
+			}
+		>
 			<Text wrap="truncate">
 				<Text color={theme.accent}>{selected === 0 ? `${icons.pointer} ` : '  '}</Text>
 				<Text bold color={theme.accent}>
 					◆ ORCHESTRATOR
 				</Text>
 				<Text color={theme.muted}> {PROVIDERS[state.orchestrator.provider].bins[0]} </Text>
-				{state.orchestrator.working ? <Spinner /> : null} {orchestratorStatus(state)}
+				{state.orchestrator.working && !interrupted ? <Spinner /> : null} {orchestratorStatus(state, interrupted)}
 				<Text color={theme.muted}>
 					{' '}
 					· {counts.done}/{state.tasks.length} tasks done
@@ -288,7 +327,7 @@ export function RunView({run, onBack}: Props) {
 					{'STATUS'.padEnd(11)}TASK
 				</Text>
 				{roster.map((e, i) => {
-					const status = employeeStatus(e, state.tasks);
+					const status = employeeStatus(e, state.tasks, waitingOnYou(e.id));
 					const isSelected = selected === i + 1;
 					const role = `[${e.role}]`;
 					return (

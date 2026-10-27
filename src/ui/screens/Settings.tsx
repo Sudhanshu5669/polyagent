@@ -1,5 +1,6 @@
 import path from 'node:path';
-import {Box, Text, useInput} from 'ink';
+import {Box, Text} from 'ink';
+import {useKeys} from '../input.js';
 import {useState} from 'react';
 import {
 	loadGlobalConfig,
@@ -19,6 +20,7 @@ import {PROVIDERS, PROVIDER_IDS, type ProviderId} from '../../core/providers.js'
 import {AddProviderFlow} from '../components/AddProviderFlow.js';
 import {Frame} from '../components/Frame.js';
 import {Paragraph} from '../components/Paragraph.js';
+import {TextInput} from '../components/TextInput.js';
 import type {Hint} from '../components/KeyHints.js';
 import {ProviderBadges, ProviderRows} from '../components/ProviderRows.js';
 import {Spinner} from '../components/Spinner.js';
@@ -39,7 +41,7 @@ interface Props {
 }
 
 const LABEL_WIDTH = Math.max(...SETTINGS_META.map(m => m.label.length)) + 2;
-const VALUE_WIDTH = Math.max(...SETTINGS_META.flatMap(m => m.options.map(o => m.format(o).length)));
+const VALUE_WIDTH = Math.max(...SETTINGS_META.flatMap(m => m.options.map(o => m.format(o).length)), 12);
 
 export function Settings({ctx, detections, onSaved, onDetections, onBack}: Props) {
 	const tabs: Tab[] = ctx.workspace.exists ? ['repo', 'global', 'providers'] : ['global', 'providers'];
@@ -48,6 +50,8 @@ export function Settings({ctx, detections, onSaved, onDetections, onBack}: Props
 	const [providerRow, setProviderRow] = useState(0);
 	const [flash, setFlash] = useState<string>();
 	const [rescanning, setRescanning] = useState(false);
+	/** True while typing a free-text setting. */
+	const [typing, setTyping] = useState(false);
 	const add = useAddProvider();
 
 	const scoped = tab === 'repo' ? ctx.settings : resolveSettings(ctx.global);
@@ -70,6 +74,7 @@ export function Settings({ctx, detections, onSaved, onDetections, onBack}: Props
 	};
 
 	const cycle = (delta: number) => {
+		if (selectedMeta.options.length === 0) return;
 		const current = scoped.values[selectedMeta.key];
 		const i = selectedMeta.options.indexOf(current);
 		const next = selectedMeta.options[(i + delta + selectedMeta.options.length) % selectedMeta.options.length];
@@ -87,7 +92,7 @@ export function Settings({ctx, detections, onSaved, onDetections, onBack}: Props
 		setFlash('Providers re-checked');
 	};
 
-	useInput(
+	useKeys(
 		(input, key) => {
 			setFlash(undefined);
 			if (key.escape || input === 'q') return onBack();
@@ -109,13 +114,14 @@ export function Settings({ctx, detections, onSaved, onDetections, onBack}: Props
 
 			if (key.upArrow || input === 'k') setRow(r => (r - 1 + SETTINGS_META.length) % SETTINGS_META.length);
 			else if (key.downArrow || input === 'j') setRow(r => (r + 1) % SETTINGS_META.length);
+			else if (key.return && selectedMeta.parse) setTyping(true);
 			else if (key.rightArrow || input === 'l' || key.return || input === ' ') cycle(1);
 			else if (key.leftArrow || input === 'h') cycle(-1);
 			else if (input === 'x' && scoped.sources[selectedMeta.key] === (tab === 'repo' ? 'repo' : 'global')) {
 				void write(selectedMeta.key, undefined);
 			}
 		},
-		{isActive: add.state.step === 'idle'},
+		{isActive: add.state.step === 'idle' && !typing},
 	);
 
 	const confirmProvider = async (provider: ProviderId, file: string, version: string) => {
@@ -128,11 +134,11 @@ export function Settings({ctx, detections, onSaved, onDetections, onBack}: Props
 	};
 
 	const hints: Hint[] =
-		add.state.step !== 'idle'
-			? [['⏎', 'confirm'], ['esc', 'back']]
+		add.state.step !== 'idle' || typing
+			? [['⏎', typing ? 'save' : 'confirm'], ['esc', 'back']]
 			: tab === 'providers'
 				? [['tab', 'next tab'], ['↑↓', 'move'], ['⏎', 'set path'], ['r', 're-check'], ['esc', 'back']]
-				: [['tab', 'next tab'], ['↑↓', 'move'], ['←→', 'change'], ['x', 'reset'], ['esc', 'back']];
+				: [['tab', 'next tab'], ['↑↓', 'move'], selectedMeta.parse ? ['⏎', 'edit'] : ['←→', 'change'], ['x', 'reset'], ['esc', 'back']];
 
 	return (
 		<Frame title="polyagent · settings" right={<ProviderBadges detections={detections} />} hints={hints}>
@@ -179,17 +185,35 @@ export function Settings({ctx, detections, onSaved, onDetections, onBack}: Props
 							const value = scoped.values[m.key];
 							const notInstalled = m.key === 'orchestrator' && detections[value as ProviderId]?.status === 'missing';
 							return (
+								selected && typing ? (
+									<Box key={m.key}>
+										<Text color={theme.accent}>{icons.pointer} </Text>
+										<Text bold>{m.label.padEnd(LABEL_WIDTH)}</Text>
+										<TextInput
+											prompt=""
+											initialValue={typeof value === 'string' ? value : ''}
+											allowEmpty
+											placeholder={m.format(null as never)}
+											onSubmit={text => {
+												setTyping(false);
+												void write(m.key, m.parse!(text));
+											}}
+											onCancel={() => setTyping(false)}
+										/>
+									</Box>
+								) : (
 								<Text key={m.key} wrap="truncate">
 									<Text color={theme.accent}>{selected ? `${icons.pointer} ` : '  '}</Text>
 									<Text bold={selected}>{m.label.padEnd(LABEL_WIDTH)}</Text>
 									<Text color={selected ? theme.accent : undefined}>
-										{selected ? '‹ ' : '  '}
+										{selected && m.options.length ? '‹ ' : '  '}
 										{m.format(value).padEnd(VALUE_WIDTH)}
-										{selected ? ' ›' : '  '}
+										{selected && m.options.length ? ' ›' : '  '}
 									</Text>
 									{notInstalled ? <Text color={theme.warn}> {icons.warn} not installed</Text> : null}
 									<Text color={theme.muted}>  {sourceLabel(tab, scoped.sources[m.key])}</Text>
 								</Text>
+								)
 							);
 						})}
 					</Box>

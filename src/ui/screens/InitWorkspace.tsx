@@ -1,4 +1,5 @@
-import {Box, Text, useApp, useInput} from 'ink';
+import {Box, Text, useApp} from 'ink';
+import {useKeys} from '../input.js';
 import {useState} from 'react';
 import type {GitTracking} from '../../core/config.js';
 import {tildify, WORKSPACE_DIRNAME} from '../../core/paths.js';
@@ -19,7 +20,7 @@ export function InitWorkspace({workspace, gitTracking, onDone}: Props) {
 	const {exit} = useApp();
 	const [error, setError] = useState<string>();
 
-	useInput(input => {
+	useKeys(input => {
 		if (input === 'q') exit();
 	});
 

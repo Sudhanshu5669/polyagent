@@ -26,6 +26,8 @@ export interface TurnInput {
 	permissions: PermissionMode;
 	/** Ask for a final answer matching this JSON Schema. */
 	jsonSchema?: object;
+	/** Claude Code only: flags that send approval requests to polyagent instead of auto-denying them. */
+	approvalArgs?: string[];
 }
 
 /** Extra inputs the runner prepares before building args. */

@@ -16,7 +16,10 @@ const GIT_TRACKING_HELP: Record<GitTracking, string> = {
 export interface SettingMeta<K extends SettingKey = SettingKey> {
 	key: K;
 	label: string;
+	/** Values to cycle through. Empty for free-text settings, which are typed in. */
 	options: Settings[K][];
+	/** For free-text settings: turns the typed text into a value (empty → null). */
+	parse?: (text: string) => Settings[K];
 	format: (value: Settings[K]) => string;
 	help: (value: Settings[K]) => string;
 }
@@ -56,5 +59,40 @@ export const SETTINGS_META: SettingMeta[] = [
 			v === null
 				? 'Every task that is ready runs at once, each employee in their own git worktree. Set a limit if you hit provider rate limits.'
 				: `At most ${v} employees work at the same time.`,
+	}),
+	meta({
+		key: 'approvals',
+		label: 'Approvals',
+		options: ['ask', 'block'],
+		format: v => (v === 'ask' ? 'Ask me' : 'Block'),
+		help: v =>
+			v === 'ask'
+				? 'When a Claude Code employee wants to do something that needs approval (like running a command), you are asked. Codex and Antigravity follow their sandbox instead.'
+				: 'Anything that needs approval is blocked and the employee carries on without it.',
+	}),
+	meta({
+		key: 'runBudget',
+		label: 'Run budget',
+		options: [null, 0.5, 1, 2, 5, 10, 25, 50],
+		format: v => (v === null ? 'None' : `$${v}`),
+		help: v =>
+			v === null
+				? 'Runs are never paused for cost. Claude Code reports cost; Codex reports tokens only, so its usage is not counted.'
+				: `A run pauses once it has cost $${v}. Resuming allows another $${v}.`,
+	}),
+	meta({
+		key: 'taskTimeout',
+		label: 'Task time limit',
+		options: [null, 5, 10, 20, 30, 60],
+		format: v => (v === null ? 'None' : `${v} min`),
+		help: v => (v === null ? 'Tasks can take as long as they need.' : `A task that runs longer than ${v} minutes is stopped and reported as failed.`),
+	}),
+	meta({
+		key: 'orchestratorModel',
+		label: 'Orchestrator model',
+		options: [],
+		parse: text => text.trim() || null,
+		format: v => v ?? 'CLI default',
+		help: () => 'The model the orchestrator uses, by any name its CLI accepts (e.g. opus, sonnet, haiku). Press ⏎ to type one; leave empty for the default.',
 	}),
 ];

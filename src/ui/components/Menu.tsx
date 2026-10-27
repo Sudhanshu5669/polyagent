@@ -1,4 +1,5 @@
-import {Box, Text, useInput} from 'ink';
+import {Box, Text} from 'ink';
+import {useKeys} from '../input.js';
 import {useState} from 'react';
 import {icons, theme} from '../theme.js';
 
@@ -33,7 +34,7 @@ export function Menu<T>({items, onSelect, isActive = true, initialIndex}: Props<
 		}
 	};
 
-	useInput(
+	useKeys(
 		(input, key) => {
 			if (key.upArrow || input === 'k') move(-1);
 			else if (key.downArrow || input === 'j') move(1);

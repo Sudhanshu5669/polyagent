@@ -1,15 +1,19 @@
-import {Text, useApp, useInput} from 'ink';
+import {Box, Text, useApp, useInput} from 'ink';
 import {useCallback, useEffect, useMemo, useState} from 'react';
+import {ApprovalBroker} from '../core/approvals.js';
 import {ChatHub, type EmployeeChat} from '../core/chat.js';
 import {saveGlobalConfig, type GlobalConfig} from '../core/config.js';
 import {loadContext, type AppContext} from '../core/context.js';
 import {applyDetections, detectProvider, type Detection} from '../core/detect.js';
 import {deleteEmployee, loadEmployees, type BrokenEmployee, type Employee} from '../core/employees.js';
 import {PROVIDER_IDS, type ProviderId} from '../core/providers.js';
-import {listRuns, RunEngine, type RunSummary} from '../core/run/engine.js';
+import {listRuns, loadRun, RunEngine, type EngineOptions, type RunSummary} from '../core/run/engine.js';
 import {isFinished} from '../core/run/types.js';
 import {listWorkspaceItems} from '../core/workspace.js';
+import {AgentNamesContext, ApprovalsContext} from './approvalsContext.js';
 import {openInEditor} from './editor.js';
+import {InputGate} from './input.js';
+import {ApprovalPrompt} from './screens/ApprovalPrompt.js';
 import {Chat} from './screens/Chat.js';
 import {Dashboard} from './screens/Dashboard.js';
 import {EmployeeForm} from './screens/EmployeeForm.js';
@@ -22,7 +26,8 @@ import {Setup} from './screens/Setup.js';
 import {icons, theme} from './theme.js';
 
 type Screen =
-	| {name: 'setup' | 'init' | 'dashboard' | 'settings' | 'help' | 'new-run' | 'run'}
+	| {name: 'setup' | 'init' | 'dashboard' | 'settings' | 'help' | 'new-run'}
+	| {name: 'run'; engine: RunEngine}
 	| {name: 'chat'; employee: Employee; chat: EmployeeChat}
 	| {name: 'employee-form'; employee?: Employee};
 type Detections = Partial<Record<ProviderId, Detection>>;
@@ -37,9 +42,11 @@ interface AppProps {
 	/** Loaded before the first render so the dashboard never flashes an empty team. */
 	initialTeam?: {employees: Employee[]; broken: BrokenEmployee[]};
 	initialRuns?: RunSummary[];
+	/** Injected in tests; normally the app makes its own. */
+	broker?: ApprovalBroker;
 }
 
-export function App({initial, initialTeam, initialRuns}: AppProps) {
+export function App({initial, initialTeam, initialRuns, broker: injectedBroker}: AppProps) {
 	const {exit, suspendTerminal} = useApp();
 	const [ctx, setCtx] = useState(initial);
 	const [screen, setScreen] = useState<Screen>(() => firstScreen(initial));
@@ -51,6 +58,23 @@ export function App({initial, initialTeam, initialRuns}: AppProps) {
 	const [run, setRun] = useState<RunEngine>();
 	const [runs, setRuns] = useState<RunSummary[]>(initialRuns ?? []);
 	const hub = useMemo(() => new ChatHub(ctx.workspace.dir), [ctx.workspace.dir]);
+	const broker = useMemo(() => injectedBroker ?? new ApprovalBroker(), [injectedBroker]);
+	const [approvalOpen, setApprovalOpen] = useState(false);
+
+	useEffect(() => {
+		void broker.start().catch((error: Error) => setNotice(`Approvals are unavailable: ${error.message}`));
+		return () => broker.close();
+	}, [broker]);
+
+	// A bell when someone starts waiting, in case you're looking at another window.
+	useEffect(() => {
+		let count = 0;
+		return broker.subscribe(() => {
+			if (broker.pending.length > count) process.stdout.write('\u0007');
+			count = broker.pending.length;
+			if (count === 0) setApprovalOpen(false);
+		});
+	}, [broker]);
 
 	const reload = useCallback(async () => {
 		setCtx(await loadContext(initial.cwd));
@@ -88,8 +112,10 @@ export function App({initial, initialTeam, initialRuns}: AppProps) {
 
 	const runActive = run !== undefined && !isFinished(run.state.status);
 
-	// ctrl+c stops whatever is running first (a run, direct chats); with nothing running it quits.
+	// Global keys, read even while a screen's input is gated.
+	// ctrl+a answers approvals. ctrl+c stops whatever is running first (a run, direct chats); with nothing running it quits.
 	useInput((input, key) => {
+		if (key.ctrl && input === 'a' && broker.pending.length > 0) return setApprovalOpen(true);
 		if (!(key.ctrl && input === 'c')) return;
 		const working = hub.workingCount();
 		if (runActive) {
@@ -102,24 +128,47 @@ export function App({initial, initialTeam, initialRuns}: AppProps) {
 		} else exit();
 	});
 
+	/** Claude Code employees ask you about actions that need approval, unless that's turned off or they run full-auto. */
+	const approvalArgsFor = (employee: Employee): string[] | undefined =>
+		ctx.settings.values.approvals === 'ask' && employee.provider === 'claude' && employee.permissions !== 'full-auto'
+			? broker.claudeArgs(employee.id)
+			: undefined;
+
+	const engineOptions = (): EngineOptions => ({
+		workspaceDir: ctx.workspace.dir,
+		cwd: ctx.workspace.root,
+		branch: ctx.workspace.git?.branch,
+		employees: team.employees,
+		orchestrator: ctx.settings.values.orchestrator,
+		orchestratorModel: ctx.settings.values.orchestratorModel ?? undefined,
+		binaryFor,
+		autoRun: ctx.settings.values.autoRun,
+		maxParallel: ctx.settings.values.maxParallel,
+		runBudget: ctx.settings.values.runBudget,
+		taskTimeoutMinutes: ctx.settings.values.taskTimeout,
+		approvalArgs: approvalArgsFor,
+	});
+
 	const startRun = (request: string) => {
-		const engine = new RunEngine(
-			{
-				workspaceDir: ctx.workspace.dir,
-				cwd: ctx.workspace.root,
-				branch: ctx.workspace.git?.branch,
-				employees: team.employees,
-				orchestrator: ctx.settings.values.orchestrator,
-				binaryFor,
-				autoRun: ctx.settings.values.autoRun,
-				maxParallel: ctx.settings.values.maxParallel,
-			},
-			request,
-		);
+		const engine = new RunEngine(engineOptions(), request);
 		engine.start();
 		void engine.done.then(reloadTeam);
 		setRun(engine);
-		setScreen({name: 'run'});
+		setScreen({name: 'run', engine});
+	};
+
+	const openRun = async (id: string) => {
+		if (run?.state.id === id) return setScreen({name: 'run', engine: run});
+		const file = await loadRun(ctx.workspace.dir, id);
+		if (!file) return setNotice("That run's file couldn't be read.");
+		setScreen({name: 'run', engine: RunEngine.restore(engineOptions(), file)});
+	};
+
+	const continueRun = (engine: RunEngine) => {
+		if (runActive && run !== engine) return setNotice('Another run is in progress. Stop it before continuing this one.');
+		setRun(engine);
+		void engine.continueRun();
+		void engine.done.then(reloadTeam);
 	};
 
 	const binaryFor = (provider: ProviderId): string | undefined => {
@@ -152,7 +201,23 @@ export function App({initial, initialTeam, initialRuns}: AppProps) {
 	};
 
 	const toDashboard = () => setScreen({name: 'dashboard'});
+	const nameOf = (agent: string) => team.employees.find(e => e.id === agent)?.name ?? agent;
 
+	return (
+		<ApprovalsContext.Provider value={broker}>
+			<AgentNamesContext.Provider value={nameOf}>
+				{/* The screen stays mounted (keeping its state) but hidden and deaf while an approval is answered. */}
+				<InputGate.Provider value={!approvalOpen}>
+					<Box display={approvalOpen ? 'none' : 'flex'} flexDirection="column">
+						{renderScreen()}
+					</Box>
+				</InputGate.Provider>
+				{approvalOpen ? <ApprovalPrompt employees={team.employees} onClose={() => setApprovalOpen(false)} /> : null}
+			</AgentNamesContext.Provider>
+		</ApprovalsContext.Provider>
+	);
+
+	function renderScreen() {
 	switch (screen.name) {
 		case 'setup':
 			return <Setup config={ctx.global} onDone={(global, found) => void finishSetup(global, found)} />;
@@ -188,13 +253,14 @@ export function App({initial, initialTeam, initialRuns}: AppProps) {
 				/>
 			);
 		case 'run':
-			return run ? <RunView run={run} onBack={toDashboard} /> : null;
+			return <RunView run={screen.engine} onBack={toDashboard} onContinue={() => continueRun(screen.engine)} />;
 		case 'chat':
 			return (
 				<Chat
 					employee={screen.employee}
 					chat={screen.chat}
 					binary={binaryFor(screen.employee.provider)}
+					approvalArgs={approvalArgsFor(screen.employee)}
 					cwd={ctx.workspace.root}
 					onBack={toDashboard}
 				/>
@@ -227,8 +293,9 @@ export function App({initial, initialTeam, initialRuns}: AppProps) {
 					runs={runs}
 					onRun={() => {
 						setNotice(undefined);
-						setScreen({name: runActive ? 'run' : 'new-run'});
+						setScreen(runActive ? {name: 'run', engine: run} : {name: 'new-run'});
 					}}
+					onOpenRun={id => void openRun(id)}
 					selectedId={selectedId}
 					onSelect={id => {
 						setSelectedId(id);
@@ -254,4 +321,5 @@ export function App({initial, initialTeam, initialRuns}: AppProps) {
 				/>
 			);
 	}
+}
 }

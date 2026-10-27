@@ -1,7 +1,9 @@
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import {render} from 'ink-testing-library';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
+import {ApprovalBroker} from '../src/core/approvals.js';
 import {saveGlobalConfig} from '../src/core/config.js';
 import {loadContext} from '../src/core/context.js';
 import {initWorkspace} from '../src/core/workspace.js';
@@ -109,6 +111,67 @@ describe('App', () => {
 		// Back on the dashboard the run is listed.
 		await press(ui.stdin, ESC);
 		await waitFor(() => frame().includes('RUNS') && frame().includes('✓ Review the repo please'), frame);
+		ui.unmount();
+	});
+
+	it('shows approval requests everywhere and answers them with ctrl+a', async () => {
+		const repo = path.join(root, 'repo');
+		fs.mkdirSync(repo);
+		await initWorkspace(repo, 'ignore-all');
+		await saveGlobalConfig({version: 1, providers: {claude: {path: path.join(root, 'bin', 'claude'), source: 'path'}}, settings: {}});
+		fs.writeFileSync(path.join(repo, '.polyagent', 'employees', 'rex.md'), '---\nname: Rex\nrole: reviewer\nprovider: claude\n---\nReview.');
+		const broker = new ApprovalBroker();
+		const ui = render(<App initial={await loadContext(repo)} broker={broker} />);
+		const frame = () => ui.lastFrame() ?? '';
+		await waitFor(() => frame().includes('Rex [reviewer]'), frame);
+
+		// What the MCP stub does for Rex's agent.
+		const answer = new Promise<string>(resolve => {
+			const socket = net.connect(broker.socketPath, () => socket.write(JSON.stringify({agent: 'rex', tool_name: 'Bash', input: {command: 'npm test'}}) + '\n'));
+			let data = '';
+			socket.on('data', chunk => (data += chunk));
+			socket.on('end', () => resolve(data));
+		});
+		await waitFor(() => frame().includes('⚑ Rex wants to run `npm test`') && frame().includes('ctrl+a to answer'), frame);
+		expect(frame()).toMatch(/⚑ Rex \[reviewer\]/);
+
+		await press(ui.stdin, '\u0001');
+		await waitFor(() => frame().includes('approval needed') && frame().includes('Always allow Bash(npm test)'), frame);
+		await press(ui.stdin, 'y');
+		expect(JSON.parse(await answer)).toEqual({behavior: 'allow', updatedInput: {command: 'npm test'}});
+		await waitFor(() => frame().includes('Rex [reviewer]') && !frame().includes('⚑'), frame);
+		ui.unmount();
+		broker.close();
+	});
+
+	it('opens a past run from the dashboard', async () => {
+		const repo = path.join(root, 'repo');
+		fs.mkdirSync(repo);
+		await initWorkspace(repo, 'ignore-all');
+		await saveGlobalConfig({version: 1, providers: {claude: {path: path.join(root, 'bin', 'claude'), source: 'path'}}, settings: {}});
+		const state = {
+			id: '20261027-120000-fix-the-login-page',
+			request: 'Fix the login page',
+			status: 'done',
+			createdAt: Date.now() - 60_000,
+			endedAt: Date.now(),
+			summary: 'The login page validates emails now.',
+			orchestrator: {provider: 'claude', working: false, turns: 2},
+			tasks: [],
+			employeeSessions: {},
+			costUsd: 0.12,
+			unapplied: [],
+		};
+		fs.mkdirSync(path.join(repo, '.polyagent', 'runs', state.id), {recursive: true});
+		fs.writeFileSync(path.join(repo, '.polyagent', 'runs', state.id, 'run.json'), JSON.stringify({state, logs: {orchestrator: []}}));
+
+		const ui = render(<App initial={await loadContext(repo)} />);
+		const frame = () => ui.lastFrame() ?? '';
+		await waitFor(() => frame().includes('✓ Fix the login page'), frame);
+		await press(ui.stdin, '\u001B[B');
+		await waitFor(() => frame().includes('The login page validates emails now.') && frame().includes('$0.12'), frame);
+		await press(ui.stdin, ENTER);
+		await waitFor(() => frame().includes('run · Fix the login page') && frame().includes('Done after'), frame);
 		ui.unmount();
 	});
 

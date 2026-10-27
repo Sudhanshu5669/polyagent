@@ -48,6 +48,40 @@ export function cacheDir(env: Env = process.env, platform: NodeJS.Platform = pro
 	return path.join(env.XDG_CACHE_HOME ?? path.join(os.homedir(), '.cache'), 'polyagent');
 }
 
+const OWNER_FILE = '.owner-pid';
+
+function alive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === 'EPERM';
+	}
+}
+
+/** Remove worktrees left behind by polyagent processes that are no longer running (a crash, a killed terminal). */
+export async function sweepAbandoned(root: string, repoCache: string): Promise<void> {
+	let runs: string[];
+	try {
+		runs = await fs.readdir(repoCache);
+	} catch {
+		return;
+	}
+
+	for (const run of runs) {
+		const dir = path.join(repoCache, run);
+		const owner = Number(await fs.readFile(path.join(dir, OWNER_FILE), 'utf8').catch(() => 'NaN'));
+		if (Number.isInteger(owner) && alive(owner)) continue;
+		for (const entry of await fs.readdir(dir).catch(() => [] as string[])) {
+			if (entry !== OWNER_FILE) await git(root, ['worktree', 'remove', '--force', path.join(dir, entry)], {allowFail: true});
+		}
+
+		await fs.rm(dir, {recursive: true, force: true});
+	}
+
+	await git(root, ['worktree', 'prune'], {allowFail: true});
+}
+
 export interface TaskMerge {
 	/** Files the task changed. */
 	files: string[];
@@ -66,6 +100,7 @@ export class WorktreeIsolation {
 	/** Latest merged state of the run. */
 	head: string;
 	private readonly worktrees = new Map<string, string>();
+	readonly dir: string;
 	private chain: Promise<unknown> = Promise.resolve();
 	private env: Env = {};
 
@@ -75,9 +110,10 @@ export class WorktreeIsolation {
 		private readonly subdir: string,
 		readonly runId: string,
 		readonly base: string,
-		private readonly dir: string,
+		dir: string,
 		env: Env,
 	) {
+		this.dir = dir;
 		this.head = base;
 		this.env = env;
 	}
@@ -112,9 +148,13 @@ export class WorktreeIsolation {
 			const base = (await git(root, [...NO_SIGN, 'commit-tree', tree, '-p', head.stdout, '-m', `polyagent: working tree at the start of run ${runId}`], {env})).stdout;
 			const repoKey = `${path.basename(root)}-${createHash('sha1').update(root).digest('hex').slice(0, 8)}`;
 			const subdir = path.relative(root, await fs.realpath(cwd));
-			const isolation = new WorktreeIsolation(root, subdir, runId, base, path.join(cache, 'worktrees', repoKey, runId), env);
+			const repoCache = path.join(cache, 'worktrees', repoKey);
+			await sweepAbandoned(root, repoCache);
+			const isolation = new WorktreeIsolation(root, subdir, runId, base, path.join(repoCache, runId), env);
+			await fs.mkdir(isolation.dir, {recursive: true});
+			// Marks the folder as in use, so another polyagent on this repo never sweeps it away.
+			await fs.writeFile(path.join(isolation.dir, OWNER_FILE), String(process.pid));
 			await git(root, ['update-ref', isolation.ref, base]);
-			await git(root, ['worktree', 'prune'], {allowFail: true});
 			return isolation;
 		} catch (error) {
 			return {reason: (error as Error).message};

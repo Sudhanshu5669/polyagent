@@ -1,6 +1,7 @@
 import {Box, Text, useWindowSize} from 'ink';
 import type {ReactNode} from 'react';
 import {MIN_COLUMNS, MIN_ROWS, theme} from '../theme.js';
+import {ApprovalBanner} from './ApprovalBanner.js';
 import {KeyHints, type Hint} from './KeyHints.js';
 
 interface Props {
@@ -10,11 +11,13 @@ interface Props {
 	hints: Hint[];
 	/** One line above the key hints, for confirmations and transient messages. */
 	notice?: ReactNode;
+	/** The approval prompt hides the banner that points to it. */
+	hideApprovalBanner?: boolean;
 	children: ReactNode;
 }
 
 /** Full-screen layout shared by every screen: header, bordered body, key-hint footer. */
-export function Frame({title, right, hints, notice, children}: Props) {
+export function Frame({title, right, hints, notice, hideApprovalBanner, children}: Props) {
 	const {columns, rows} = useWindowSize();
 
 	if (columns < MIN_COLUMNS || rows < MIN_ROWS) {
@@ -46,6 +49,7 @@ export function Frame({title, right, hints, notice, children}: Props) {
 			<Box borderStyle="round" borderColor={theme.border} flexGrow={1} flexDirection="column" paddingX={1} overflow="hidden">
 				{children}
 			</Box>
+			{hideApprovalBanner ? null : <ApprovalBanner />}
 			{notice ? <Box paddingX={1}>{notice}</Box> : null}
 			<KeyHints hints={hints} />
 		</Box>

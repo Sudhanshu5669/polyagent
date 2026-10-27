@@ -34,6 +34,13 @@ describe('claude adapter (fixtures recorded from Claude Code 2.1.311)', () => {
 		]);
 	});
 
+	it('removes edit tools in read-only mode and appends approval routing', () => {
+		const args = claudeAdapter.args({...input, approvalArgs: ['--permission-prompt-tool', 'mcp__polyagent__approve']});
+		expect(args).toContain('--disallowedTools');
+		expect(args[args.indexOf('--disallowedTools') + 1]).toBe('Edit,Write,MultiEdit,NotebookEdit');
+		expect(args.slice(-2)).toEqual(['--permission-prompt-tool', 'mcp__polyagent__approve']);
+	});
+
 	it('turns a turn with a tool call into session, tool, text, usage and result events', () => {
 		const events = parseAll(claudeAdapter, fixture('claude-read.jsonl'));
 		expect(events[0]).toEqual({type: 'session', sessionId: 'b683a96f-130a-4397-b30f-3d9fb5bf9b53'});

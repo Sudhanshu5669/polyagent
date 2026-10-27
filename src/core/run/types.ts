@@ -53,6 +53,8 @@ export interface RunState {
 	isolation?: {mode: 'worktrees'; ref: string; base: string} | {mode: 'shared'; reason: string};
 	/** Merged files that couldn't be written to the user's working tree because they changed there during the run. */
 	unapplied: string[];
+	/** While paused, running tasks finish but nothing new starts and the orchestrator waits. */
+	paused?: {reason: 'you' | 'budget'; at: number};
 }
 
 export interface RunFile {

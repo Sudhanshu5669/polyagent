@@ -49,25 +49,27 @@ function calls(): Call[] {
 }
 
 function engine(overrides: Partial<EngineOptions> = {}, request = 'Add a checkout endpoint and its UI') {
-	const run = new RunEngine(
-		{
-			workspaceDir: path.join(dir, 'ws'),
-			cwd: dir,
-			branch: 'main',
-			employees: TEAM,
-			orchestrator: 'claude',
-			binaryFor: () => FAKE,
-			autoRun: true,
-			maxParallel: null,
-			// Outside the repo, like the real cache folder.
-			cacheDir: path.join(tmpDir(), 'cache'),
-			...overrides,
-		},
-		request,
-	);
+	const options: EngineOptions = {
+		workspaceDir: path.join(dir, 'ws'),
+		cwd: dir,
+		branch: 'main',
+		employees: TEAM,
+		orchestrator: 'claude',
+		binaryFor: () => FAKE,
+		autoRun: true,
+		maxParallel: null,
+		// Outside the repo, like the real cache folder.
+		cacheDir: path.join(tmpDir(), 'cache'),
+		...overrides,
+	};
+	engine.options = options;
+	const run = new RunEngine(options, request);
 	run.start();
 	return run;
 }
+
+/** Options of the most recent engine() call, for restoring runs. */
+engine.options = undefined as unknown as EngineOptions;
 
 const task = (id: string, assignee: string, depends_on: string[] = []) => ({id, title: `Do ${id}`, assignee, brief: `Brief for ${id}`, depends_on});
 
@@ -193,6 +195,76 @@ describe('RunEngine', () => {
 		const overlap = (x: Call, y: Call) => x.started < y.ended && y.started < x.ended;
 		expect(overlap(byTask.a1!, byTask.b!)).toBe(true);
 		expect(overlap(byTask.a1!, byTask.a2!)).toBe(false);
+	});
+});
+
+describe('RunEngine controls', () => {
+	it('pause holds new work until resumed', async () => {
+		script({tasks: [task('api', 'maya')]}, {finish: 'done'});
+		const run = engine();
+		run.pause();
+		await waitFor(() => run.state.tasks.length === 1);
+		await new Promise(r => setTimeout(r, 400));
+		expect(run.state.tasks[0]!.status).toBe('ready');
+		expect(calls().filter(c => c.role === 'employee')).toHaveLength(0);
+		run.resume();
+		await run.done;
+		expect(run.state.status).toBe('done');
+	});
+
+	it('pauses at the budget and allows another budget on resume', async () => {
+		// Each fake orchestrator turn costs $0.01.
+		script({tasks: [task('api', 'maya')]}, {finish: 'done'});
+		const run = engine({runBudget: 0.005});
+		await waitFor(() => run.state.paused?.reason === 'budget');
+		expect(run.state.tasks[0]!.status).toBe('ready');
+		expect(run.logs.orchestrator!.some(e => e.kind === 'note' && /reaching its budget/.test(e.text))).toBe(true);
+		run.resume();
+		await waitFor(() => run.state.tasks[0]!.status === 'done' || run.state.paused !== undefined);
+		// The next orchestrator turn passes the new limit again; resuming once more lets it finish.
+		await waitFor(() => run.state.paused !== undefined || run.state.status === 'done');
+		if (run.state.paused) run.resume();
+		await run.done;
+		expect(run.state.status).toBe('done');
+	});
+
+	it('stops a task that runs past the time limit', async () => {
+		process.env.FAKE_SLEEP_MS = '30000';
+		script({tasks: [task('api', 'maya')]}, {finish: 'gave up'});
+		const run = engine({taskTimeoutMinutes: 0.01});
+		await run.done;
+		expect(run.state.tasks[0]).toMatchObject({status: 'failed', error: 'Stopped after 0.01 minutes (the task time limit).'});
+		expect(calls().filter(c => c.role === 'orchestrator')[1]!.prompt).toContain('task time limit');
+	});
+
+	it('continues an interrupted run from its saved file', async () => {
+		script({finish: 'Finished after the restart.'});
+		const saved = engine();
+		saved.cancel();
+		await saved.done;
+		const file = (await loadRun(path.join(dir, 'ws'), saved.state.id))!;
+		// Make it look like polyagent died mid-task.
+		file.state.status = 'running';
+		file.state.summary = undefined;
+		file.state.tasks = [{id: 'api', title: 'Do api', assignee: 'maya', brief: 'Brief for api', dependsOn: [], status: 'running', revisions: 0}];
+
+		const run = RunEngine.restore(engine.options, file);
+		expect(run.interrupted).toBe(true);
+		void run.continueRun();
+		await run.done;
+		expect(run.state.tasks[0]!.status).toBe('done');
+		expect(run.state.summary).toBe('Finished after the restart.');
+		expect(calls().filter(c => c.role === 'orchestrator').at(-1)!.prompt).toContain('polyagent was restarted. Tasks "api" were interrupted');
+	});
+
+	it('restores a finished run read-only', async () => {
+		script({finish: 'All done.'});
+		const first = engine();
+		await first.done;
+		const run = RunEngine.restore(engine.options, (await loadRun(path.join(dir, 'ws'), first.state.id))!);
+		expect(run.interrupted).toBe(false);
+		await run.done;
+		expect(run.state.summary).toBe('All done.');
 	});
 });
 

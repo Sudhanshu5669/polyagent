@@ -7,7 +7,8 @@ import {truncate, type Adapter, type AgentEvent, type ToolStatus} from './types.
  * Verified against Claude Code 2.1.311. With no approval surface, anything that needs approval is denied, never hangs.
  */
 const PERMISSION_FLAGS: Record<PermissionMode, string[]> = {
-	'read-only': ['--permission-mode', 'default'],
+	// Edit tools are removed outright, so read-only holds even when other requests are routed to the user.
+	'read-only': ['--permission-mode', 'default', '--disallowedTools', 'Edit,Write,MultiEdit,NotebookEdit'],
 	'auto-edit': ['--permission-mode', 'acceptEdits'],
 	'full-auto': ['--permission-mode', 'bypassPermissions'],
 };
@@ -45,6 +46,7 @@ export const claudeAdapter: Adapter = {
 			...(input.model ? ['--model', input.model] : []),
 			...(input.sessionId ? ['--resume', input.sessionId] : []),
 			...(input.jsonSchema ? ['--json-schema', JSON.stringify(input.jsonSchema)] : []),
+			...(input.approvalArgs ?? []),
 		];
 	},
 	createParser(cwd) {

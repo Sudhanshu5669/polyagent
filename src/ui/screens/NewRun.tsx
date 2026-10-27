@@ -1,4 +1,5 @@
-import {Box, Text, useInput} from 'ink';
+import {Box, Text} from 'ink';
+import {useKeys} from '../input.js';
 import type {Detection} from '../../core/detect.js';
 import type {Employee} from '../../core/employees.js';
 import {tildify} from '../../core/paths.js';
@@ -23,7 +24,7 @@ interface Props {
 }
 
 export function NewRun({employees, orchestrator, detections, autoRun, root, branch, parallel, onStart, onBack}: Props) {
-	useInput((_, key) => {
+	useKeys((_, key) => {
 		if (key.escape) onBack();
 	});
 

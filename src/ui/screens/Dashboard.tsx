@@ -1,4 +1,5 @@
-import {Box, Text, useApp, useInput} from 'ink';
+import {Box, Text, useApp} from 'ink';
+import {useKeys} from '../input.js';
 import {useState, useSyncExternalStore, type ReactNode} from 'react';
 import {ADAPTERS} from '../../core/agents/runner.js';
 import type {ChatHub} from '../../core/chat.js';
@@ -15,6 +16,7 @@ import {Paragraph} from '../components/Paragraph.js';
 import {ProviderBadges} from '../components/ProviderRows.js';
 import {RoleTag} from '../components/RoleTag.js';
 import {Spinner} from '../components/Spinner.js';
+import {usePendingApprovals} from '../approvalsContext.js';
 import {icons, theme} from '../theme.js';
 
 interface Props {
@@ -28,6 +30,7 @@ interface Props {
 	run?: RunEngine;
 	runs: RunSummary[];
 	onRun: () => void;
+	onOpenRun: (id: string) => void;
 	selectedId?: string;
 	onSelect: (id: string) => void;
 	onChat: (employee: Employee) => void;
@@ -50,12 +53,23 @@ export function Dashboard(props: Props) {
 	const runActive = run !== undefined && !isFinished(run.state.status);
 	const [confirm, setConfirm] = useState<'delete' | 'quit'>();
 
-	const items: (Employee | BrokenEmployee)[] = [...employees, ...broken];
-	const index = Math.max(0, items.findIndex(e => e.id === selectedId));
-	const selected = items[index];
-	const selectedEmployee = employees.find(e => e.id === selected?.id);
+	const pending = usePendingApprovals();
 
-	useInput((input, key) => {
+	// The live run (if it isn't saved yet) followed by saved runs, newest first.
+	const runRows: RunSummary[] =
+		run && !runs.some(r => r.id === run.state.id)
+			? [{id: run.state.id, request: run.state.request, status: run.state.status, interrupted: false, createdAt: run.state.createdAt, tasks: run.state.tasks.length, costUsd: run.state.costUsd}, ...runs]
+			: runs;
+	// Employees and runs share one selection; run rows are keyed "run:<id>".
+	const rowIds = [...employees.map(e => e.id), ...broken.map(b => b.id), ...runRows.map(r => `run:${r.id}`)];
+	const index = Math.max(0, rowIds.indexOf(selectedId ?? ''));
+	const selectedRow = rowIds[index];
+	const selectedRun = runRows.find(r => `run:${r.id}` === selectedRow);
+	const selected = selectedRun ? undefined : ([...employees, ...broken] as (Employee | BrokenEmployee)[]).find(e => e.id === selectedRow);
+	const selectedEmployee = employees.find(e => e.id === selected?.id);
+	const items = [...employees, ...broken];
+
+	useKeys((input, key) => {
 		if (confirm) {
 			if (input === 'y') {
 				if (confirm === 'delete' && selected) props.onDelete(selected.id);
@@ -70,9 +84,10 @@ export function Dashboard(props: Props) {
 			return;
 		}
 
-		const move = (delta: number) => items.length && props.onSelect(items[(index + delta + items.length) % items.length]!.id);
+		const move = (delta: number) => rowIds.length && props.onSelect(rowIds[(index + delta + rowIds.length) % rowIds.length]!);
 		if (key.upArrow || input === 'k') move(-1);
 		else if (key.downArrow || input === 'j') move(1);
+		else if (key.return && selectedRun) props.onOpenRun(selectedRun.id);
 		else if (key.return && selectedEmployee) props.onChat(selectedEmployee);
 		else if (input === 'n') props.onHire();
 		else if (input === 'r') props.onRun();
@@ -96,8 +111,10 @@ export function Dashboard(props: Props) {
 	const hints: Hint[] = confirm
 		? [['y', confirm === 'delete' ? 'remove' : 'stop them and quit'], ['any key', 'cancel']]
 		: items.length === 0
-			? [['n', 'hire'], ['s', 'settings'], ['?', 'help'], ['q', 'quit']]
-			: [['r', runActive ? 'open run' : 'new run'], ['↑↓', 'select'], ['⏎', 'chat'], ['n', 'hire'], ['e', 'edit'], ['o', 'open'], ['d', 'remove'], ['s', 'settings'], ['?', 'help'], ['q', 'quit']];
+			? [['n', 'hire'], ...(runRows.length ? ([['↑↓', 'select'], ['⏎', 'open run']] as Hint[]) : []), ['s', 'settings'], ['?', 'help'], ['q', 'quit']]
+			: selectedRun
+				? [['r', runActive ? 'open live run' : 'new run'], ['↑↓', 'select'], ['⏎', 'open run'], ['n', 'hire'], ['s', 'settings'], ['?', 'help'], ['q', 'quit']]
+				: [['r', runActive ? 'open run' : 'new run'], ['↑↓', 'select'], ['⏎', 'chat'], ['n', 'hire'], ['e', 'edit'], ['o', 'open'], ['d', 'remove'], ['s', 'settings'], ['?', 'help'], ['q', 'quit']];
 
 	const working = hub.workingCount();
 	const notice = confirm ? (
@@ -130,7 +147,7 @@ export function Dashboard(props: Props) {
 					{employees.map(e => (
 						<Text key={e.id} wrap="truncate">
 							<Text color={theme.accent}>{e.id === selected?.id ? `${icons.pointer} ` : '  '}</Text>
-							{hub.isWorking(e.id) ? <Spinner /> : <Text color={theme.muted}>{icons.dot}</Text>}{' '}
+							{pending.some(r => r.agent === e.id) ? <Text color={theme.warn}>⚑</Text> : hub.isWorking(e.id) ? <Spinner /> : <Text color={theme.muted}>{icons.dot}</Text>}{' '}
 							<Text bold={e.id === selected?.id}>{e.name}</Text> <RoleTag role={e.role} />{' '}
 							<Text color={theme.muted}>{PROVIDERS[e.provider].bins[0]}</Text>
 						</Text>
@@ -145,14 +162,16 @@ export function Dashboard(props: Props) {
 						<Text bold color={theme.muted}>
 							RUNS
 						</Text>
-						{runs.length === 0 && !run ? <Text color={theme.muted}>  No runs yet</Text> : null}
-						{(run && !runs.some(r => r.id === run.state.id) ? [{id: run.state.id, request: run.state.request, status: run.state.status, interrupted: false}] : runs).map(r => {
+						{runRows.length === 0 ? <Text color={theme.muted}>  No runs yet</Text> : null}
+						{runRows.map(r => {
 							const live = run?.state.id === r.id;
 							const status = live ? run.state.status : r.status;
+							const isSelected = selectedRow === `run:${r.id}`;
 							return (
 								<Text key={r.id} wrap="truncate">
-									{'  '}
-									{live && !isFinished(status) ? <Spinner /> : <RunIcon status={status} interrupted={!live && r.interrupted} />} {r.request}
+									<Text color={theme.accent}>{isSelected ? `${icons.pointer} ` : '  '}</Text>
+									{live && !isFinished(status) ? <Spinner /> : <RunIcon status={status} interrupted={!live && r.interrupted} />}{' '}
+									<Text bold={isSelected}>{r.request}</Text>
 								</Text>
 							);
 						})}
@@ -173,7 +192,9 @@ export function Dashboard(props: Props) {
 				</Box>
 
 				<Box flexDirection="column" flexGrow={1} flexBasis={0}>
-					{selectedEmployee ? (
+					{selectedRun ? (
+						<RunDetails run={selectedRun} live={run?.state.id === selectedRun.id ? run : undefined} />
+					) : selectedEmployee ? (
 						<EmployeeDetails employee={selectedEmployee} installed={detections[selectedEmployee.provider]?.status !== 'missing' && detections[selectedEmployee.provider]?.status !== 'broken'} working={hub.isWorking(selectedEmployee.id)} />
 					) : selected ? (
 						<BrokenDetails employee={selected as BrokenEmployee} />
@@ -193,6 +214,33 @@ function RunIcon({status, interrupted}: {status: RunStatus; interrupted: boolean
 	if (status === 'done') return <Text color={theme.ok}>{icons.ok}</Text>;
 	if (status === 'failed') return <Text color={theme.fail}>{icons.fail}</Text>;
 	return <Text color={theme.muted}>⊘</Text>;
+}
+
+function RunDetails({run, live}: {run: RunSummary; live?: RunEngine}) {
+	const status = live?.state.status ?? run.status;
+	const interrupted = !live && run.interrupted;
+	const summary = live?.state.summary ?? run.summary;
+	const cost = live?.state.costUsd ?? run.costUsd;
+	const tasks = live?.state.tasks.length ?? run.tasks;
+	return (
+		<Box flexDirection="column">
+			<Paragraph>{run.request}</Paragraph>
+			<Box flexDirection="column" marginY={1} flexShrink={0}>
+				<Field label="Status">
+					{interrupted ? <Text color={theme.warn}>interrupted: open it to continue</Text> : live && !isFinished(status) ? 'in progress' : status}
+				</Field>
+				<Field label="Started">{new Date(run.createdAt).toLocaleString()}</Field>
+				<Field label="Tasks">{String(tasks)}</Field>
+				{cost > 0 ? <Field label="Cost">${cost.toFixed(2)}</Field> : null}
+			</Box>
+			{summary ? (
+				<Box flexDirection="column" flexShrink={0}>
+					<Text color={theme.muted}>Summary</Text>
+					<Paragraph>{summary}</Paragraph>
+				</Box>
+			) : null}
+		</Box>
+	);
 }
 
 function EmployeeDetails({employee, installed, working}: {employee: Employee; installed: boolean; working: boolean}) {

@@ -41,6 +41,12 @@ export interface EngineOptions {
 	isolation?: 'worktrees' | 'shared';
 	/** Override the engine's own cap on simultaneous tasks (tests). */
 	concurrency?: number;
+	/** Flags that route an employee's approval requests to the user (Claude Code), when approvals are on. */
+	approvalArgs?: (employee: Employee) => string[] | undefined;
+	/** Pause once the run has cost this many dollars; null = no budget. */
+	runBudget?: number | null;
+	/** Stop a task after this many minutes; null = no limit. */
+	taskTimeoutMinutes?: number | null;
 	/** Where worktrees live; defaults to the user cache folder. */
 	cacheDir?: string;
 }
@@ -70,7 +76,7 @@ function newRunId(request: string, now = new Date()): string {
  */
 export class RunEngine {
 	readonly state: RunState;
-	readonly logs: Record<string, ChatEntry[]> = {[ORCHESTRATOR]: []};
+	logs: Record<string, ChatEntry[]> = {[ORCHESTRATOR]: []};
 	readonly done: Promise<void>;
 	version = 0;
 
@@ -83,6 +89,8 @@ export class RunEngine {
 	private saving: Promise<void> = Promise.resolve();
 	private resolveDone!: () => void;
 	private iso?: WorktreeIsolation;
+	/** Spend at which the run pauses next; raised by one budget each time the user resumes. */
+	private budgetLimit: number;
 
 	constructor(
 		private readonly options: EngineOptions,
@@ -101,6 +109,7 @@ export class RunEngine {
 			unapplied: [],
 		};
 		this.done = new Promise(resolve => (this.resolveDone = resolve));
+		this.budgetLimit = options.runBudget ?? Number.POSITIVE_INFINITY;
 	}
 
 	get dir(): string {
@@ -117,15 +126,23 @@ export class RunEngine {
 	};
 
 	start(): void {
+		this.started = true;
 		this.changed();
 		void this.setUp();
 	}
 
 	private async setUp(): Promise<void> {
+		const {state} = this;
+		const dirty = await workingTreeChanges(this.options.cwd, 2000);
+		await this.isolate(state.id);
+		if (isFinished(state.status)) return;
+		await this.orchestratorTurn(planPrompt(state.request, dirty, state.isolation?.mode === 'worktrees'));
+	}
+
+	private async isolate(runKey: string): Promise<void> {
 		const {options, state} = this;
-		const dirty = await workingTreeChanges(options.cwd, 2000);
 		if (options.isolation !== 'shared') {
-			const iso = await WorktreeIsolation.create(options.cwd, state.id, options.cacheDir);
+			const iso = await WorktreeIsolation.create(options.cwd, runKey, options.cacheDir);
 			if (iso instanceof WorktreeIsolation) {
 				this.iso = iso;
 				state.isolation = {mode: 'worktrees', ref: iso.ref, base: iso.base};
@@ -139,8 +156,51 @@ export class RunEngine {
 					? 'Employees work in their own git worktrees, in parallel. Finished work is merged into your working tree.'
 					: `Tasks run one at a time in your working tree: ${state.isolation.reason}.`,
 		});
-		if (isFinished(state.status)) return;
-		await this.orchestratorTurn(planPrompt(state.request, dirty, state.isolation.mode === 'worktrees'));
+	}
+
+	/** Rebuild a run from its saved file: to look at a past run, or to continue one that was interrupted. */
+	static restore(options: EngineOptions, file: RunFile): RunEngine {
+		const engine = new RunEngine(options, file.state.request);
+		Object.assign(engine.state, file.state, {unapplied: file.state.unapplied ?? []});
+		engine.logs = {[ORCHESTRATOR]: [], ...file.logs};
+		engine.budgetLimit = options.runBudget ? file.state.costUsd + options.runBudget : Number.POSITIVE_INFINITY;
+		if (isFinished(file.state.status)) engine.resolveDone();
+		return engine;
+	}
+
+	/** True for a saved run that stopped without finishing (polyagent quit or crashed). */
+	get interrupted(): boolean {
+		return !isFinished(this.state.status) && this.turns.size === 0 && !this.started;
+	}
+
+	private started = false;
+
+	/**
+	 * Continue an interrupted run. Work that was in flight is lost, so those tasks start again;
+	 * finished work is already in the working tree, which becomes the new snapshot.
+	 */
+	async continueRun(): Promise<void> {
+		const {state} = this;
+		if (isFinished(state.status) || this.started) return;
+		this.started = true;
+		const restarted = state.tasks.filter(t => t.status === 'running');
+		for (const task of restarted) task.status = 'ready';
+		state.orchestrator.working = false;
+		this.log(ORCHESTRATOR).push({kind: 'note', text: 'Continuing after polyagent was restarted.'});
+		this.changed();
+
+		await this.isolate(`${state.id}-continued-${Date.now()}`);
+		if (state.status === 'planning') {
+			await this.orchestratorTurn(planPrompt(state.request, undefined, state.isolation?.mode === 'worktrees'));
+			return;
+		}
+
+		const names = restarted.map(t => `"${t.id}"`).join(', ');
+		this.updates.push({
+			kind: 'user',
+			text: `polyagent was restarted. ${restarted.length ? `Tasks ${names} were interrupted and are starting again. ` : ''}Everything else is as you left it.`,
+		});
+		this.pump();
 	}
 
 	/** Start a plan that is waiting for approval (autoRun off). */
@@ -160,6 +220,30 @@ export class RunEngine {
 
 	cancel(): void {
 		this.end('cancelled', 'Stopped by you.');
+	}
+
+	/** Let running tasks finish, but start nothing new until resumed. */
+	pause(reason: 'you' | 'budget' = 'you'): void {
+		if (isFinished(this.state.status) || this.state.paused) return;
+		this.state.paused = {reason, at: Date.now()};
+		this.log(ORCHESTRATOR).push({
+			kind: 'note',
+			text: reason === 'budget' ? `Paused: this run has cost $${this.state.costUsd.toFixed(2)}, reaching its budget.` : 'Paused by you.',
+		});
+		this.changed();
+	}
+
+	resume(): void {
+		if (!this.state.paused) return;
+		if (this.state.paused.reason === 'budget') this.budgetLimit = this.state.costUsd + (this.options.runBudget ?? 0);
+		this.state.paused = undefined;
+		this.log(ORCHESTRATOR).push({kind: 'note', text: 'Resumed.'});
+		this.pump();
+	}
+
+	private spend(costUsd: number | undefined): void {
+		this.state.costUsd += costUsd ?? 0;
+		if (this.state.costUsd >= this.budgetLimit) this.pause('budget');
 	}
 
 	get working(): boolean {
@@ -216,7 +300,7 @@ export class RunEngine {
 		this.turns.delete(ORCHESTRATOR);
 		state.orchestrator.working = false;
 		if (recorder.sessionId) state.orchestrator.sessionId = recorder.sessionId;
-		state.costUsd += recorder.usage.costUsd ?? 0;
+		this.spend(recorder.usage.costUsd);
 		recorder.finish(outcome);
 		if (isFinished(state.status)) return;
 		if (!outcome.ok) return this.end('failed', `The orchestrator stopped: ${outcome.error ?? 'unknown error'}`);
@@ -307,7 +391,7 @@ export class RunEngine {
 			if (task.status === 'blocked' && task.dependsOn.every(id => state.tasks.find(t => t.id === id)?.status === 'done')) task.status = 'ready';
 		}
 
-		if (state.status === 'running') {
+		if (state.status === 'running' && !state.paused) {
 			const limit = Math.min(options.concurrency ?? (this.iso ? Number.POSITIVE_INFINITY : 1), options.maxParallel ?? Number.POSITIVE_INFINITY);
 			for (const task of state.tasks) {
 				if (state.tasks.filter(t => t.status === 'running').length >= limit) break;
@@ -316,7 +400,7 @@ export class RunEngine {
 			}
 		}
 
-		if (!state.orchestrator.working && (this.updates.length > 0 || this.errors.length > 0)) {
+		if (!state.orchestrator.working && !state.paused && (this.updates.length > 0 || this.errors.length > 0)) {
 			const updates = this.updates;
 			const errors = this.errors;
 			this.updates = [];
@@ -378,16 +462,27 @@ export class RunEngine {
 				sessionId: state.employeeSessions[employee.id],
 				model: employee.model,
 				permissions: employee.permissions,
+				approvalArgs: options.approvalArgs?.(employee),
 			},
 			event => recorder.apply(event),
 		);
 		this.turns.set(task.id, turn);
 		this.changed();
 
+		let timedOut = false;
+		const limit = options.taskTimeoutMinutes;
+		const timer = limit
+			? setTimeout(() => {
+					timedOut = true;
+					turn.cancel();
+				}, limit * 60_000)
+			: undefined;
+
 		const outcome = await turn.done;
+		clearTimeout(timer);
 		this.turns.delete(task.id);
 		if (recorder.sessionId) state.employeeSessions[employee.id] = recorder.sessionId;
-		state.costUsd += recorder.usage.costUsd ?? 0;
+		this.spend(recorder.usage.costUsd);
 		recorder.finish(outcome);
 		task.endedAt = Date.now();
 		task.report = recorder.finalText;
@@ -400,7 +495,7 @@ export class RunEngine {
 
 		// The task stays 'running' until its changes are merged, so nothing treats it as settled too early.
 		let status: TaskStatus = outcome.ok ? 'done' : 'failed';
-		let error = outcome.ok ? undefined : (outcome.error ?? 'failed');
+		let error = outcome.ok ? undefined : timedOut ? `Stopped after ${limit} minutes (the task time limit).` : (outcome.error ?? 'failed');
 
 		// Partial work from a failed task is merged too, as it would be in a shared working tree.
 		if (this.iso && space.start) {

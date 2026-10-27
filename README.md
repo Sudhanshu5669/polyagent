@@ -50,6 +50,10 @@ Anything that would need approval is blocked, never left hanging, and shows as *
 
 Press `⏎` on an employee to chat with them directly. Their session is resumed between messages and across restarts; `ctrl+n` starts fresh, `ctrl+o` shows thinking and tool output, `ctrl+c` stops them.
 
+#### Approvals
+
+With **Approvals: Ask me** (the default), a Claude Code employee that wants to do something needing approval, like running a command, waits for you instead of being blocked. A ⚑ banner appears on every screen (with a terminal bell); `ctrl+a` opens the request, where you can allow once, always allow that command for that employee until polyagent quits (shell commands are matched on their first two words, e.g. `npm test`), deny, or deny with a reason the employee will read. Read-only employees never get edit tools, so approvals can't turn them into editors. Codex and Antigravity follow their own sandboxes instead. Set **Approvals: Block** to have anything that needs approval blocked automatically.
+
 Claude Code and Codex are verified against real installs (Claude Code 2.1.311, codex-cli 0.164.0). Antigravity support is marked experimental: its output format isn't publicly documented, so it hasn't been confirmed yet.
 
 ### Runs
@@ -69,6 +73,13 @@ When a run starts, polyagent snapshots your working tree exactly as it is (uncom
 - If two tasks change the same lines, the second is reported to the orchestrator as a conflict and nothing of it is applied; a revision starts from the merged code.
 - If you edit a file yourself during the run and an employee changes it too, your version is kept. The run's summary says which files, and the team's versions stay available: `git checkout refs/polyagent/runs/<id> -- <files>`.
 - Every run keeps a ref, `refs/polyagent/runs/<id>`, with the full history of what each task merged.
+
+#### Pausing, budgets and coming back later
+
+- `ctrl+p` pauses a run: tasks already running finish, nothing new starts and the orchestrator waits. `ctrl+p` again resumes.
+- **Run budget** (Settings) pauses a run once it has cost that much, as reported by Claude Code (Codex reports tokens, not cost). Resuming allows another budget's worth.
+- **Task time limit** stops a task that runs too long and reports it to the orchestrator as failed.
+- Every run is listed on the dashboard; select one and press `⏎` to open it. A run that was interrupted (polyagent quit or crashed) can be continued with `ctrl+r`: tasks that were in flight start again, everything already merged stays, and the orchestrator is told what happened. Worktrees left behind by a crash are cleaned up automatically, never while another polyagent is still using them.
 
 The run screen lists the orchestrator and every employee with their role, status and current task. `⏎` watches one agent's live output (`tab` for the next), `ctrl+t` shows the task list with briefs and reports, and anything you type goes to the orchestrator. `ctrl+c` stops the run. Changes stay uncommitted on your current branch for you to review. Each run is saved to `.polyagent/runs/<id>/run.json`.
 
@@ -93,6 +104,10 @@ Set globally or per repo (repo wins). Change them in the interface (`s`) or with
 | `orchestrator` | `claude`, `codex`, `antigravity` | `claude` |
 | `autoRun` | `on`, `off` (approve each plan first) | `on` |
 | `maxParallel` | a number, or `unlimited` | `unlimited` |
+| `approvals` | `ask`, `block` | `ask` |
+| `runBudget` | dollars, or `none` | `none` |
+| `taskTimeout` | minutes, or `none` | `none` |
+| `orchestratorModel` | any model name the orchestrator's CLI accepts, or `default` | `default` |
 
 polyagent manages git tracking with its own `.polyagent/.gitignore`. It never edits your project's `.gitignore`.
 

@@ -24,6 +24,14 @@ export const SettingsSchema = z.object({
 	autoRun: z.boolean(),
 	/** null = no limit on how many employees work at once. */
 	maxParallel: z.number().int().positive().nullable(),
+	/** Claude employees: ask the user about actions that need approval, or block them. */
+	approvals: z.enum(['ask', 'block']),
+	/** Pause a run once it has cost this many US dollars (as reported by the CLIs). null = no budget. */
+	runBudget: z.number().positive().nullable(),
+	/** Stop a task after this many minutes. null = no limit. */
+	taskTimeout: z.number().int().positive().nullable(),
+	/** null = the orchestrator CLI's default model. */
+	orchestratorModel: z.string().trim().min(1).nullable(),
 });
 export type Settings = z.infer<typeof SettingsSchema>;
 export type SettingKey = keyof Settings;
@@ -33,6 +41,10 @@ export const DEFAULT_SETTINGS: Settings = {
 	orchestrator: 'claude',
 	autoRun: true,
 	maxParallel: null,
+	approvals: 'ask',
+	runBudget: null,
+	taskTimeout: null,
+	orchestratorModel: null,
 };
 
 export const GlobalConfigSchema = z.object({
@@ -124,12 +136,25 @@ export function parseSettingValue(key: SettingKey, input: string): Settings[Sett
 			if (['true', 'on', 'yes', '1'].includes(value)) return true;
 			if (['false', 'off', 'no', '0'].includes(value)) return false;
 			throw new Error('expected on or off');
-		case 'maxParallel': {
+		case 'maxParallel':
+		case 'taskTimeout': {
 			if (['none', 'unlimited', 'off', 'null'].includes(value)) return null;
 			const n = Number(value);
 			if (!Number.isInteger(n) || n < 1) throw new Error('expected a whole number ≥ 1, or "unlimited"');
 			return n;
 		}
+
+		case 'runBudget': {
+			if (['none', 'unlimited', 'off', 'null'].includes(value)) return null;
+			const n = Number(value.replace(/^\$/, ''));
+			if (!Number.isFinite(n) || n <= 0) throw new Error('expected an amount in dollars, e.g. 5, or "none"');
+			return n;
+		}
+
+		case 'approvals':
+			return z.enum(['ask', 'block']).parse(value);
+		case 'orchestratorModel':
+			return ['default', 'none', 'null', ''].includes(value) ? null : value;
 	}
 }
 

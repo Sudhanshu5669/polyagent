@@ -1,4 +1,5 @@
-import {Box, Text, useAnimation, useInput, useWindowSize} from 'ink';
+import {Box, Text, useAnimation, useWindowSize} from 'ink';
+import {useKeys} from '../input.js';
 import {useEffect, useMemo, useState, useSyncExternalStore} from 'react';
 import {ADAPTERS} from '../../core/agents/runner.js';
 import type {EmployeeChat} from '../../core/chat.js';
@@ -10,6 +11,7 @@ import {RoleTag} from '../components/RoleTag.js';
 import {Spinner} from '../components/Spinner.js';
 import {TextInput} from '../components/TextInput.js';
 import {buildRows, Viewport} from '../components/Transcript.js';
+import {usePendingApprovals} from '../approvalsContext.js';
 import {icons, theme} from '../theme.js';
 
 interface Props {
@@ -18,14 +20,17 @@ interface Props {
 	/** Path of the provider's CLI, or undefined when it isn't installed. */
 	binary?: string;
 	cwd: string;
+	/** Routes Claude Code approval requests to the user, when approvals are on. */
+	approvalArgs?: string[];
 	onBack: () => void;
 }
 
 // Header, two border lines, divider, status line, input line, key hints.
 const CHROME_ROWS = 7;
 
-export function Chat({employee, chat, binary, cwd, onBack}: Props) {
+export function Chat({employee, chat, binary, cwd, approvalArgs, onBack}: Props) {
 	useSyncExternalStore(chat.subscribe, () => chat.version);
+	const pending = usePendingApprovals();
 	const {columns, rows} = useWindowSize();
 	const [offset, setOffset] = useState(0);
 	const [details, setDetails] = useState(false);
@@ -45,7 +50,7 @@ export function Chat({employee, chat, binary, cwd, onBack}: Props) {
 	useEffect(() => setOffset(o => Math.min(o, maxOffset)), [maxOffset]);
 
 	const page = Math.max(1, height - 2);
-	useInput((input, key) => {
+	useKeys((input, key) => {
 		if (confirmReset) {
 			if (input === 'y') void chat.reset().then(() => setNotice('Started a fresh session.'));
 			setConfirmReset(false);
@@ -78,7 +83,7 @@ export function Chat({employee, chat, binary, cwd, onBack}: Props) {
 		}
 
 		setOffset(0);
-		void chat.send(employee, binary, cwd, text).catch((error: Error) => setNotice(error.message));
+		void chat.send(employee, binary, cwd, text, {approvalArgs}).catch((error: Error) => setNotice(error.message));
 	};
 
 	const adapter = ADAPTERS[employee.provider];
@@ -120,15 +125,23 @@ export function Chat({employee, chat, binary, cwd, onBack}: Props) {
 				<Viewport rows={allRows} height={height} offset={offset} />
 			)}
 			<Text color={theme.border}>{'─'.repeat(width)}</Text>
-			<StatusLine chat={chat} name={employee.name} offset={offset} />
+			<StatusLine chat={chat} name={employee.name} offset={offset} waiting={pending.some(r => r.agent === employee.id)} />
 			<TextInput placeholder={`Message ${employee.name}`} onSubmit={send} clearOnSubmit isActive={!confirmReset} />
 		</Frame>
 	);
 }
 
-function StatusLine({chat, name, offset}: {chat: EmployeeChat; name: string; offset: number}) {
+function StatusLine({chat, name, offset, waiting}: {chat: EmployeeChat; name: string; offset: number; waiting: boolean}) {
 	// Ticks once a second so the elapsed time stays current.
 	useAnimation({interval: 1000, isActive: chat.working});
+	if (chat.working && waiting) {
+		return (
+			<Text color={theme.warn}>
+				⚑ {name} is waiting for your approval · <Text bold>ctrl+a</Text> to answer
+			</Text>
+		);
+	}
+
 	if (chat.working) {
 		const seconds = Math.round((Date.now() - (chat.startedAt ?? Date.now())) / 1000);
 		return (

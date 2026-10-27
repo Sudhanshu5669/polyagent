@@ -1,4 +1,5 @@
-import {Box, Text, useInput} from 'ink';
+import {Box, Text} from 'ink';
+import {useKeys} from '../input.js';
 import {Frame} from '../components/Frame.js';
 import {theme} from '../theme.js';
 
@@ -12,6 +13,7 @@ const LEFT: Section[] = [
 			['↑↓ ⏎ esc', 'move, choose, back'],
 			['?', 'this help'],
 			['q', 'quit or go back'],
+			['ctrl+a', 'answer an approval'],
 			['ctrl+c', 'stop work, or quit'],
 		],
 	],
@@ -20,7 +22,7 @@ const LEFT: Section[] = [
 		[
 			['r', 'new run / open run'],
 			['n', 'hire an employee'],
-			['⏎', 'chat with employee'],
+			['⏎', 'chat / open past run'],
 			['e  o  d', 'edit, open file, remove'],
 			['s', 'settings'],
 		],
@@ -39,9 +41,11 @@ const RIGHT: Section[] = [
 	[
 		'Run',
 		[
-			['⏎', 'watch agent / start plan'],
+			['⏎', 'watch, or start plan'],
 			['tab', 'next agent (watching)'],
 			['ctrl+t', 'task list'],
+			['ctrl+p', 'pause / resume'],
+			['ctrl+r', 'continue interrupted'],
 			['type ⏎', 'tell the orchestrator'],
 		],
 	],
@@ -83,7 +87,7 @@ function Column({sections}: {sections: Section[]}) {
 }
 
 export function Help({onBack}: {onBack: () => void}) {
-	useInput((input, key) => {
+	useKeys((input, key) => {
 		if (key.escape || key.return || input === 'q' || input === '?') onBack();
 	});
 

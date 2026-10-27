@@ -1,4 +1,5 @@
-import {Box, Text, useApp, useInput} from 'ink';
+import {Box, Text, useApp} from 'ink';
+import {useKeys} from '../input.js';
 import {useCallback, useEffect, useState} from 'react';
 import type {GlobalConfig} from '../../core/config.js';
 import {applyDetections, detectProvider, type Detection} from '../../core/detect.js';
@@ -40,7 +41,7 @@ export function Setup({config, onDone}: Props) {
 	const missing = PROVIDER_IDS.filter(id => detections[id]?.status !== 'found');
 	const inMenu = add.state.step === 'idle' && !showInstall;
 
-	useInput(
+	useKeys(
 		(input, key) => {
 			if (showInstall && (key.escape || key.return || input === 'q')) setShowInstall(false);
 			else if (inMenu && input === 'q') exit();

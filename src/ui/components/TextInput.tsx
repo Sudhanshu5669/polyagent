@@ -1,4 +1,5 @@
-import {Box, Text, useInput, usePaste} from 'ink';
+import {Box, Text} from 'ink';
+import {useKeys, usePasted} from '../input.js';
 import {useState} from 'react';
 import {theme} from '../theme.js';
 
@@ -42,9 +43,9 @@ export function TextInput({initialValue = '', placeholder, prompt = '› ', onSu
 
 	const insert = (text: string) => replace(value.slice(0, cursor) + text + value.slice(cursor), cursor + text.length);
 
-	usePaste(text => insert(text.replace(/\r?\n/g, ' ')), {isActive});
+	usePasted(text => insert(text.replace(/\r?\n/g, ' ')), {isActive});
 
-	useInput(
+	useKeys(
 		(input, key) => {
 			if (key.return) {
 				if (!value.trim() && !allowEmpty) return;

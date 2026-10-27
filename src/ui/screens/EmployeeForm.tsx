@@ -1,4 +1,5 @@
-import {Box, Text, useApp, useInput} from 'ink';
+import {Box, Text, useApp} from 'ink';
+import {useKeys} from '../input.js';
 import {useState} from 'react';
 import {ADAPTERS} from '../../core/agents/runner.js';
 import type {Detection} from '../../core/detect.js';
@@ -142,7 +143,7 @@ export function EmployeeForm({workspaceDir, employee, takenIds, detections, defa
 		}
 	};
 
-	useInput(
+	useKeys(
 		(input, key) => {
 			setError(undefined);
 			if (confirmDiscard) {
@@ -308,7 +309,7 @@ export function EmployeeForm({workspaceDir, employee, takenIds, detections, defa
 }
 
 function TemplateStep({onPick, onCancel}: {onPick: (t: RoleTemplate | undefined) => void; onCancel: () => void}) {
-	useInput((_, key) => {
+	useKeys((_, key) => {
 		if (key.escape) onCancel();
 	});
 
