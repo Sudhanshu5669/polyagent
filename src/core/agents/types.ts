@@ -14,7 +14,7 @@ export type AgentEvent =
 	| {type: 'usage'; costUsd?: number; inputTokens?: number; outputTokens?: number}
 	| {type: 'error'; message: string}
 	/** The CLI's own end-of-turn marker. The runner still decides success from the exit code. */
-	| {type: 'result'; ok: boolean; text?: string};
+	| {type: 'result'; ok: boolean; text?: string; structured?: unknown};
 
 export interface TurnInput {
 	prompt: string;
@@ -24,13 +24,21 @@ export interface TurnInput {
 	sessionId?: string;
 	model?: string;
 	permissions: PermissionMode;
+	/** Ask for a final answer matching this JSON Schema. */
+	jsonSchema?: object;
+}
+
+/** Extra inputs the runner prepares before building args. */
+export interface TurnFiles {
+	/** jsonSchema written to disk, for CLIs that take a schema file. */
+	schemaFile?: string;
 }
 
 export interface Adapter {
 	provider: ProviderId;
 	/** False when we can't confirm the CLI's output format against a real install yet. */
 	verified: boolean;
-	args(input: TurnInput): string[];
+	args(input: TurnInput, files?: TurnFiles): string[];
 	/** A fresh, stateful line parser for one turn. */
 	createParser(cwd: string): (line: string) => AgentEvent[];
 }

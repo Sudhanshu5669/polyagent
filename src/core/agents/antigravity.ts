@@ -19,7 +19,7 @@ type Json = Record<string, unknown>;
 export const antigravityAdapter: Adapter = {
 	provider: 'antigravity',
 	verified: false,
-	args(input) {
+	args(input, files) {
 		return [
 			'-p',
 			inlineSystemPrompt(input),
@@ -28,6 +28,7 @@ export const antigravityAdapter: Adapter = {
 			...PERMISSION_FLAGS[input.permissions],
 			...(input.model ? ['--model', input.model] : []),
 			...(input.sessionId ? ['--conversation', input.sessionId] : []),
+			...(files?.schemaFile ? ['--json-schema', files.schemaFile] : []),
 		];
 	},
 	createParser() {
@@ -60,7 +61,8 @@ export const antigravityAdapter: Adapter = {
 				if (!ok) events.push({type: 'error', message: String(pick(e, 'error', 'message') ?? 'Antigravity reported an error')});
 				const usage = (e.usage ?? {}) as Json;
 				events.push({type: 'usage', inputTokens: num(pick(usage, 'input_tokens', 'inputTokens')), outputTokens: num(pick(usage, 'output_tokens', 'outputTokens'))});
-				events.push({type: 'result', ok, text: typeof text === 'string' ? text : undefined});
+				const structured = pick(e, 'structured_output', 'structuredOutput');
+				events.push({type: 'result', ok, text: typeof text === 'string' ? text : undefined, ...(structured !== undefined ? {structured} : {})});
 				return events;
 			}
 

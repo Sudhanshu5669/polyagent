@@ -1,4 +1,7 @@
 import {spawn, type ChildProcess} from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {createInterface} from 'node:readline';
 import {antigravityAdapter} from './antigravity.js';
 import {claudeAdapter} from './claude.js';
@@ -47,7 +50,15 @@ process.once('exit', killAllTurns);
 /** Run one turn of an agent CLI and stream normalized events until it exits. */
 export function runTurn(binary: string, provider: ProviderId, input: TurnInput, onEvent: (event: AgentEvent) => void): RunningTurn {
 	const adapter = ADAPTERS[provider];
-	const child = spawn(binary, adapter.args(input), {
+	let schemaDir: string | undefined;
+	let schemaFile: string | undefined;
+	if (input.jsonSchema) {
+		schemaDir = fs.mkdtempSync(path.join(os.tmpdir(), 'polyagent-schema-'));
+		schemaFile = path.join(schemaDir, 'schema.json');
+		fs.writeFileSync(schemaFile, JSON.stringify(input.jsonSchema));
+	}
+
+	const child = spawn(binary, adapter.args(input, {schemaFile}), {
 		cwd: input.cwd,
 		// No stdin: a closed stdin is what tells these CLIs they are running headless.
 		stdio: ['ignore', 'pipe', 'pipe'],
@@ -73,13 +84,18 @@ export function runTurn(binary: string, provider: ProviderId, input: TurnInput, 
 		if (stderr.length > 50) stderr.shift();
 	});
 
+	const cleanup = () => {
+		live.delete(child);
+		if (schemaDir) fs.rmSync(schemaDir, {recursive: true, force: true});
+	};
+
 	const done = new Promise<TurnOutcome>(resolve => {
 		child.once('error', error => {
-			live.delete(child);
+			cleanup();
 			resolve({ok: false, cancelled, exitCode: null, error: `Couldn't start ${binary}: ${error.message}`});
 		});
 		child.once('close', code => {
-			live.delete(child);
+			cleanup();
 			if (cancelled) return resolve({ok: false, cancelled: true, exitCode: code});
 			if (code === 0 && !reportedError) return resolve({ok: true, cancelled: false, exitCode: 0});
 			const tail = stderr.filter(l => l.trim()).slice(-5).join('\n');

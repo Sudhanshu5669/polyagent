@@ -20,6 +20,8 @@ interface Props {
 	allowEmpty?: boolean;
 	/** Clear after submit, for chat-style inputs. */
 	clearOnSubmit?: boolean;
+	/** Reports every change, so parents can tell whether the input is empty. */
+	onChange?: (value: string) => void;
 	isActive?: boolean;
 }
 
@@ -27,13 +29,14 @@ interface Props {
  * Single-line input. ←→ move, ctrl+a/e or home/end jump, ctrl+w deletes a word, ctrl+u clears,
  * enter submits, esc cancels. Pasted newlines become spaces.
  */
-export function TextInput({initialValue = '', placeholder, prompt = '› ', onSubmit, onCancel, complete, allowEmpty, clearOnSubmit, isActive = true}: Props) {
+export function TextInput({initialValue = '', placeholder, prompt = '› ', onSubmit, onCancel, complete, allowEmpty, clearOnSubmit, onChange, isActive = true}: Props) {
 	const [value, setValue] = useState(initialValue);
 	const [cursor, setCursor] = useState(initialValue.length);
 	const [candidates, setCandidates] = useState<string[]>([]);
 
 	const replace = (next: string, nextCursor = next.length) => {
 		setValue(next);
+		onChange?.(next);
 		setCursor(Math.max(0, Math.min(nextCursor, next.length)));
 	};
 

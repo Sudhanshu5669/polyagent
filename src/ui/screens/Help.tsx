@@ -9,23 +9,49 @@ const LEFT: Section[] = [
 	[
 		'Everywhere',
 		[
-			['↑↓ j k', 'move'],
-			['⏎', 'choose'],
-			['esc', 'go back'],
+			['↑↓ ⏎ esc', 'move, choose, back'],
 			['?', 'this help'],
 			['q', 'quit or go back'],
-			['ctrl+c', 'stop employees, or quit'],
+			['ctrl+c', 'stop work, or quit'],
 		],
 	],
 	[
 		'Dashboard',
 		[
+			['r', 'new run / open run'],
 			['n', 'hire an employee'],
 			['⏎', 'chat with employee'],
-			['e', 'edit'],
-			['o', 'open file in $EDITOR'],
-			['d', 'remove'],
+			['e  o  d', 'edit, open file, remove'],
 			['s', 'settings'],
+		],
+	],
+	[
+		'Settings',
+		[
+			['tab', 'switch tab'],
+			['← →  x', 'change, reset'],
+			['⏎  r', 'set CLI path, re-check'],
+		],
+	],
+];
+
+const RIGHT: Section[] = [
+	[
+		'Run',
+		[
+			['⏎', 'watch agent / start plan'],
+			['tab', 'next agent (watching)'],
+			['ctrl+t', 'task list'],
+			['type ⏎', 'tell the orchestrator'],
+		],
+	],
+	[
+		'Chat and watching',
+		[
+			['↑↓ pgup pgdn', 'scroll'],
+			['ctrl+g', 'jump to latest'],
+			['ctrl+o', 'more detail'],
+			['ctrl+n', 'new session (chat)'],
 		],
 	],
 	[
@@ -33,30 +59,6 @@ const LEFT: Section[] = [
 		[
 			['⏎', 'edit field'],
 			['ctrl+s', 'save'],
-		],
-	],
-];
-
-const RIGHT: Section[] = [
-	[
-		'Chat',
-		[
-			['⏎', 'send'],
-			['↑↓ pgup pgdn', 'scroll'],
-			['ctrl+g', 'jump to latest'],
-			['ctrl+o', 'thinking + tool output'],
-			['ctrl+n', 'new session'],
-			['ctrl+c', 'stop the employee'],
-		],
-	],
-	[
-		'Settings',
-		[
-			['tab', 'switch tab'],
-			['← → space', 'change value'],
-			['x', 'reset to inherited'],
-			['⏎', 'set CLI path'],
-			['r', 're-check CLIs'],
 		],
 	],
 ];

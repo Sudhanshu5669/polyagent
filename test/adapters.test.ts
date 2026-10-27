@@ -3,7 +3,7 @@ import path from 'node:path';
 import {describe, expect, it} from 'vitest';
 import {antigravityAdapter} from '../src/core/agents/antigravity.js';
 import {claudeAdapter} from '../src/core/agents/claude.js';
-import {codexAdapter} from '../src/core/agents/codex.js';
+import {codexAdapter, unwrapShell} from '../src/core/agents/codex.js';
 import type {Adapter, AgentEvent} from '../src/core/agents/types.js';
 
 const fixture = (name: string) => fs.readFileSync(path.join(import.meta.dirname, 'fixtures', name), 'utf8').split('\n');
@@ -60,7 +60,7 @@ describe('claude adapter (fixtures recorded from Claude Code 2.1.311)', () => {
 	});
 });
 
-describe('codex adapter (event shapes from the official non-interactive docs)', () => {
+describe('codex adapter', () => {
 	it('puts exec options before the resume subcommand and inlines instructions only on the first turn', () => {
 		expect(codexAdapter.args({...input, systemPrompt: 'rules'})).toEqual([
 			'exec',
@@ -90,6 +90,25 @@ describe('codex adapter (event shapes from the official non-interactive docs)', 
 		expect(events).toContainEqual(expect.objectContaining({type: 'tool', name: 'edit', summary: 'src/a.ts', status: 'done'}));
 		expect(events).toContainEqual({type: 'text', text: 'Repo contains docs, sdk, and examples directories.'});
 		expect(events.at(-1)).toEqual({type: 'result', ok: true});
+	});
+
+	it('parses a real codex-cli 0.164.0 turn', () => {
+		const events = parseAll(codexAdapter, fixture('codex-real.jsonl'));
+		expect(events[0]).toEqual({type: 'session', sessionId: '01a17e16-9d60-79f1-bebc-a6b0b1d85266'});
+		expect(events.filter(e => e.type === 'tool' && e.status === 'done').map(e => e.type === 'tool' && e.summary)).toEqual([
+			'rg --files -g math.ts -g AGENTS.md',
+			'cat math.ts',
+		]);
+		expect(events.filter(e => e.type === 'text').at(-1)).toEqual({type: 'text', text: '`add` takes two numbers, `a` and `b`, and returns their sum.'});
+		expect(events.at(-1)).toEqual({type: 'result', ok: true});
+	});
+
+	it('shows the command inside the shell wrapper', () => {
+		expect(unwrapShell("/bin/zsh -lc 'cat math.ts'")).toBe('cat math.ts');
+		expect(unwrapShell('bash -lc ls')).toBe('ls');
+		expect(unwrapShell(String.raw`/bin/bash -c 'echo '\''hi'\'''`)).toBe("echo 'hi'");
+		expect(unwrapShell('npm test')).toBe('npm test');
+		expect(unwrapShell(`/bin/zsh -lc "pwd && rg --files -g 'math.ts'"`)).toBe("pwd && rg --files -g 'math.ts'");
 	});
 
 	it('reports failed commands and failed turns', () => {

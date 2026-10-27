@@ -1,6 +1,6 @@
 import {Box, Text} from 'ink';
 import type {ReactNode} from 'react';
-import type {ChatEntry} from '../../core/chat.js';
+import type {ChatEntry} from '../../core/transcript.js';
 import {icons, theme} from '../theme.js';
 import {roleColor} from './RoleTag.js';
 import {Spinner} from './Spinner.js';
@@ -92,6 +92,21 @@ export function buildRows(entries: ChatEntry[], name: string, role: string, widt
 			case 'text': {
 				const label = `${name} › `;
 				labelled(key, <Text bold color={roleColor(role)}>{label}</Text>, label.length, entry.text);
+				break;
+			}
+
+			case 'brief': {
+				if (rows.length > 0) add(`${key}-gap`, <Text> </Text>);
+				add(`${key}-t`, (
+					<Text>
+						<Text bold color={theme.accent}>orchestrator › </Text>
+						<Text bold>{entry.title}</Text>
+					</Text>
+				));
+				const lines = wrapText(entry.text, width - 2);
+				const shown = details ? lines : lines.slice(0, 3);
+				shown.forEach((line, i) => add(`${key}-b${i}`, <Text color={theme.muted}>  {line}</Text>));
+				if (shown.length < lines.length) add(`${key}-bm`, <Text color={theme.muted}>  … {lines.length - shown.length} more lines (ctrl+o)</Text>);
 				break;
 			}
 

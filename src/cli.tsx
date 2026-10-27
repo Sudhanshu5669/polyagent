@@ -4,6 +4,8 @@ import {parseArgs} from 'node:util';
 import {render} from 'ink';
 import {configCommand} from './commands/config.js';
 import {killAllTurns} from './core/agents/runner.js';
+import {loadEmployees} from './core/employees.js';
+import {listRuns} from './core/run/engine.js';
 import {doctor} from './commands/doctor.js';
 import {s} from './commands/style.js';
 import {loadContext} from './core/context.js';
@@ -105,8 +107,9 @@ async function launchTui(cwd: string): Promise<number> {
 	}
 
 	const ctx = await loadContext(cwd);
+	const [team, runs] = ctx.workspace.exists ? await Promise.all([loadEmployees(ctx.workspace.dir), listRuns(ctx.workspace.dir, 5)]) : [undefined, undefined];
 	// The app handles ctrl+c itself: the first press stops running employees.
-	const instance = render(<App initial={ctx} />, {alternateScreen: true, exitOnCtrlC: false});
+	const instance = render(<App initial={ctx} initialTeam={team} initialRuns={runs} />, {alternateScreen: true, exitOnCtrlC: false});
 	for (const signal of ['SIGTERM', 'SIGHUP'] as const) {
 		process.once(signal, () => {
 			killAllTurns();

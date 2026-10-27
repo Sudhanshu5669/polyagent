@@ -2,6 +2,8 @@ import {Box, Text, useApp, useInput} from 'ink';
 import {useState, useSyncExternalStore, type ReactNode} from 'react';
 import {ADAPTERS} from '../../core/agents/runner.js';
 import type {ChatHub} from '../../core/chat.js';
+import type {RunEngine, RunSummary} from '../../core/run/engine.js';
+import {isFinished, type RunStatus} from '../../core/run/types.js';
 import type {AppContext} from '../../core/context.js';
 import type {Detection} from '../../core/detect.js';
 import type {BrokenEmployee, Employee} from '../../core/employees.js';
@@ -22,6 +24,10 @@ interface Props {
 	broken: BrokenEmployee[];
 	presets: string[];
 	hub: ChatHub;
+	/** The run started in this session, if any. */
+	run?: RunEngine;
+	runs: RunSummary[];
+	onRun: () => void;
 	selectedId?: string;
 	onSelect: (id: string) => void;
 	onChat: (employee: Employee) => void;
@@ -37,9 +43,11 @@ interface Props {
 const LIST_WIDTH = 32;
 
 export function Dashboard(props: Props) {
-	const {ctx, detections, employees, broken, presets, hub, selectedId} = props;
+	const {ctx, detections, employees, broken, presets, hub, run, runs, selectedId} = props;
 	const {exit} = useApp();
 	useSyncExternalStore(hub.subscribe, () => hub.version);
+	useSyncExternalStore(run?.subscribe ?? noopSubscribe, () => run?.version ?? 0);
+	const runActive = run !== undefined && !isFinished(run.state.status);
 	const [confirm, setConfirm] = useState<'delete' | 'quit'>();
 
 	const items: (Employee | BrokenEmployee)[] = [...employees, ...broken];
@@ -53,6 +61,7 @@ export function Dashboard(props: Props) {
 				if (confirm === 'delete' && selected) props.onDelete(selected.id);
 				if (confirm === 'quit') {
 					hub.cancelAll();
+					run?.cancel();
 					exit();
 				}
 			}
@@ -66,13 +75,14 @@ export function Dashboard(props: Props) {
 		else if (key.downArrow || input === 'j') move(1);
 		else if (key.return && selectedEmployee) props.onChat(selectedEmployee);
 		else if (input === 'n') props.onHire();
+		else if (input === 'r') props.onRun();
 		else if (input === 'e' && selectedEmployee) props.onEdit(selectedEmployee);
 		else if (input === 'o' && selected) props.onOpenFile(selected.file);
 		else if (input === 'd' && selected) setConfirm('delete');
 		else if (input === 's') props.onOpenSettings();
 		else if (input === '?') props.onOpenHelp();
 		else if (input === 'q') {
-			if (hub.workingCount() > 0) setConfirm('quit');
+			if (hub.workingCount() > 0 || runActive) setConfirm('quit');
 			else exit();
 		}
 	});
@@ -87,17 +97,23 @@ export function Dashboard(props: Props) {
 		? [['y', confirm === 'delete' ? 'remove' : 'stop them and quit'], ['any key', 'cancel']]
 		: items.length === 0
 			? [['n', 'hire'], ['s', 'settings'], ['?', 'help'], ['q', 'quit']]
-			: [['↑↓', 'select'], ['⏎', 'chat'], ['n', 'hire'], ['e', 'edit'], ['o', 'open file'], ['d', 'remove'], ['s', 'settings'], ['?', 'help'], ['q', 'quit']];
+			: [['r', runActive ? 'open run' : 'new run'], ['↑↓', 'select'], ['⏎', 'chat'], ['n', 'hire'], ['e', 'edit'], ['o', 'open'], ['d', 'remove'], ['s', 'settings'], ['?', 'help'], ['q', 'quit']];
 
 	const working = hub.workingCount();
 	const notice = confirm ? (
 		<Text color={theme.warn}>
 			{confirm === 'delete'
 				? `Remove ${selected && 'name' in selected ? selected.name : selected?.id}? Their file and chat history are deleted.`
-				: `${working} employee${working === 1 ? ' is' : 's are'} still working. Quit and stop them?`}
+				: runActive
+					? 'A run is still going. Quit and stop it?'
+					: `${working} employee${working === 1 ? ' is' : 's are'} still working. Quit and stop them?`}
 		</Text>
 	) : noneWorking ? (
 		<Text color={theme.fail}>{icons.fail} No agent CLI is working. Press s, then open Agent CLIs to fix it.</Text>
+	) : runActive && !props.notice ? (
+		<Text>
+			<Spinner /> A run is in progress ({run.state.tasks.filter(t => t.status === 'running').length} working). Press <Text bold color={theme.accent}>r</Text> to watch it.
+		</Text>
 	) : (
 		props.notice
 	);
@@ -105,7 +121,8 @@ export function Dashboard(props: Props) {
 	return (
 		<Frame title={title} right={<ProviderBadges detections={detections} />} hints={hints} notice={notice}>
 			<Box flexGrow={1}>
-				<Box flexDirection="column" width={LIST_WIDTH} marginRight={2}>
+				{/* Fixed list width, and a detail column sized by the space left (not its content), so wrapped text never reflows mid-measure. */}
+				<Box flexDirection="column" width={LIST_WIDTH} flexShrink={0} marginRight={2}>
 					<Text bold color={theme.muted}>
 						EMPLOYEES{working > 0 ? <Text color={theme.accent}> · {working} working</Text> : null}
 					</Text>
@@ -126,24 +143,38 @@ export function Dashboard(props: Props) {
 					))}
 					<Box marginTop={1} flexDirection="column">
 						<Text bold color={theme.muted}>
-							PRESETS
+							RUNS
 						</Text>
-						{presets.length === 0 ? (
-							<Text color={theme.muted}>  No presets yet</Text>
-						) : (
-							presets.map(p => (
+						{runs.length === 0 && !run ? <Text color={theme.muted}>  No runs yet</Text> : null}
+						{(run && !runs.some(r => r.id === run.state.id) ? [{id: run.state.id, request: run.state.request, status: run.state.status, interrupted: false}] : runs).map(r => {
+							const live = run?.state.id === r.id;
+							const status = live ? run.state.status : r.status;
+							return (
+								<Text key={r.id} wrap="truncate">
+									{'  '}
+									{live && !isFinished(status) ? <Spinner /> : <RunIcon status={status} interrupted={!live && r.interrupted} />} {r.request}
+								</Text>
+							);
+						})}
+					</Box>
+					{presets.length > 0 ? (
+						<Box marginTop={1} flexDirection="column">
+							<Text bold color={theme.muted}>
+								PRESETS
+							</Text>
+							{presets.map(p => (
 								<Text key={p} wrap="truncate">
 									{'  '}
 									{icons.dot} {p}
 								</Text>
-							))
-						)}
-					</Box>
+							))}
+						</Box>
+					) : null}
 				</Box>
 
-				<Box flexDirection="column" flexGrow={1}>
+				<Box flexDirection="column" flexGrow={1} flexBasis={0}>
 					{selectedEmployee ? (
-						<EmployeeDetails employee={selectedEmployee} installed={detections[selectedEmployee.provider]?.status === 'found'} working={hub.isWorking(selectedEmployee.id)} />
+						<EmployeeDetails employee={selectedEmployee} installed={detections[selectedEmployee.provider]?.status !== 'missing' && detections[selectedEmployee.provider]?.status !== 'broken'} working={hub.isWorking(selectedEmployee.id)} />
 					) : selected ? (
 						<BrokenDetails employee={selected as BrokenEmployee} />
 					) : (
@@ -153,6 +184,15 @@ export function Dashboard(props: Props) {
 			</Box>
 		</Frame>
 	);
+}
+
+const noopSubscribe = () => () => {};
+
+function RunIcon({status, interrupted}: {status: RunStatus; interrupted: boolean}) {
+	if (interrupted) return <Text color={theme.warn}>{icons.warn}</Text>;
+	if (status === 'done') return <Text color={theme.ok}>{icons.ok}</Text>;
+	if (status === 'failed') return <Text color={theme.fail}>{icons.fail}</Text>;
+	return <Text color={theme.muted}>⊘</Text>;
 }
 
 function EmployeeDetails({employee, installed, working}: {employee: Employee; installed: boolean; working: boolean}) {
@@ -208,7 +248,7 @@ function EmptyState({orchestrator}: {orchestrator: string}) {
 					{'Employees are agents with one job each: a frontend engineer, a backend engineer, a reviewer, an artist. Each one runs on the agent CLI you choose.'}
 				</Paragraph>
 				<Text> </Text>
-				<Paragraph>{`Later, the orchestrator (${orchestrator}) will plan work and hand it to the right employees, in parallel where it can.`}</Paragraph>
+				<Paragraph>{`Then press r and describe what you want: the orchestrator (${orchestrator}) plans the work and hands it to the right employees.`}</Paragraph>
 			</Box>
 			<Text>
 				Press <Text bold color={theme.accent}>n</Text> to hire your first employee.

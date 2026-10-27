@@ -1,9 +1,11 @@
+import path from 'node:path';
 import type {PermissionMode} from '../employees.js';
 import {inlineSystemPrompt, truncate, type Adapter, type AgentEvent} from './types.js';
 
 /**
- * Codex: `codex exec --json`, JSONL events per the official non-interactive docs
- * (thread.started, turn.*, item.started/updated/completed, error). Not yet run against a real install here.
+ * Codex: `codex exec --json` JSONL events (thread.started, turn.*, item.started/updated/completed, error).
+ * Verified against codex-cli 0.164.0, including `exec <options> resume <id> <prompt>` and --output-schema,
+ * whose answer arrives as the final agent_message text.
  */
 const SANDBOX: Record<PermissionMode, string> = {
 	'read-only': 'read-only',
@@ -15,14 +17,21 @@ type Json = Record<string, unknown>;
 
 export const codexAdapter: Adapter = {
 	provider: 'codex',
-	verified: false,
-	args(input) {
+	verified: true,
+	args(input, files) {
 		// exec's own options must come before the `resume` subcommand.
-		const options = ['--json', '--skip-git-repo-check', '--sandbox', SANDBOX[input.permissions], ...(input.model ? ['-m', input.model] : [])];
+		const options = [
+			'--json',
+			'--skip-git-repo-check',
+			'--sandbox',
+			SANDBOX[input.permissions],
+			...(input.model ? ['-m', input.model] : []),
+			...(files?.schemaFile ? ['--output-schema', files.schemaFile] : []),
+		];
 		const prompt = inlineSystemPrompt(input);
 		return input.sessionId ? ['exec', ...options, 'resume', input.sessionId, prompt] : ['exec', ...options, prompt];
 	},
-	createParser() {
+	createParser(cwd) {
 		return line => {
 			let e: Json;
 			try {
@@ -37,7 +46,7 @@ export const codexAdapter: Adapter = {
 				case 'item.started':
 				case 'item.updated':
 				case 'item.completed':
-					return itemEvents(e.item as Json | undefined, e.type === 'item.completed');
+					return itemEvents(e.item as Json | undefined, e.type === 'item.completed', cwd);
 				case 'turn.completed': {
 					const usage = (e.usage ?? {}) as Json;
 					return [
@@ -57,7 +66,7 @@ export const codexAdapter: Adapter = {
 	},
 };
 
-function itemEvents(item: Json | undefined, completed: boolean): AgentEvent[] {
+function itemEvents(item: Json | undefined, completed: boolean, cwd: string): AgentEvent[] {
 	if (!item) return [];
 	const id = String(item.id ?? '');
 	// Codex before 0.44 used item_type / assistant_message.
@@ -77,7 +86,7 @@ function itemEvents(item: Json | undefined, completed: boolean): AgentEvent[] {
 					type: 'tool',
 					id,
 					name: 'shell',
-					summary: String(item.command ?? ''),
+					summary: unwrapShell(String(item.command ?? '')),
 					status: completed ? (failed ? 'failed' : 'done') : 'running',
 					output: typeof item.aggregated_output === 'string' ? truncate(item.aggregated_output) : undefined,
 				},
@@ -86,7 +95,7 @@ function itemEvents(item: Json | undefined, completed: boolean): AgentEvent[] {
 
 		case 'file_change': {
 			const changes = Array.isArray(item.changes) ? (item.changes as Json[]) : [];
-			const summary = changes.map(c => String(c.path ?? '')).join(', ');
+			const summary = changes.map(c => relative(String(c.path ?? ''), cwd)).join(', ');
 			return [{type: 'tool', id, name: 'edit', summary, status: completed ? (item.status === 'failed' ? 'failed' : 'done') : 'running'}];
 		}
 
@@ -109,6 +118,10 @@ function itemEvents(item: Json | undefined, completed: boolean): AgentEvent[] {
 	}
 }
 
+function relative(file: string, cwd: string): string {
+	return path.isAbsolute(file) && file.startsWith(cwd + path.sep) ? path.relative(cwd, file) : file;
+}
+
 function errorMessage(value: unknown): string | undefined {
 	if (typeof value === 'string') return value;
 	if (value && typeof value === 'object' && 'message' in value) return String(value.message);
@@ -117,4 +130,13 @@ function errorMessage(value: unknown): string | undefined {
 
 function num(value: unknown): number | undefined {
 	return typeof value === 'number' ? value : undefined;
+}
+
+/** Codex runs commands as `/bin/zsh -lc '<command>'`; show just the command. */
+export function unwrapShell(command: string): string {
+	const match = /^\S*?(?:ba|z)?sh -l?c (?:'([\s\S]*)'|(\S[\s\S]*))$/.exec(command);
+	if (!match) return command;
+	if (match[1] !== undefined) return match[1].replace(/'\\''/g, "'");
+	const bare = match[2]!;
+	return bare.length > 1 && bare.startsWith('"') && bare.endsWith('"') ? bare.slice(1, -1).replace(/\\"/g, '"') : bare;
 }

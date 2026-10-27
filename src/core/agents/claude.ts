@@ -44,6 +44,7 @@ export const claudeAdapter: Adapter = {
 			...(input.systemPrompt ? ['--append-system-prompt', input.systemPrompt] : []),
 			...(input.model ? ['--model', input.model] : []),
 			...(input.sessionId ? ['--resume', input.sessionId] : []),
+			...(input.jsonSchema ? ['--json-schema', JSON.stringify(input.jsonSchema)] : []),
 		];
 	},
 	createParser(cwd) {
@@ -73,6 +74,8 @@ export const claudeAdapter: Adapter = {
 						if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) events.push({type: 'text', text: block.text});
 						else if (block.type === 'thinking' && typeof block.thinking === 'string' && block.thinking.trim()) {
 							events.push({type: 'thinking', text: block.thinking});
+						} else if (block.type === 'tool_use' && block.name === 'StructuredOutput') {
+							// The --json-schema answer; it arrives again on the result event.
 						} else if (block.type === 'tool_use' && typeof block.id === 'string') {
 							const name = String(block.name ?? 'tool');
 							const tool = {name: TOOL_VERBS[name] ?? name.replace(/^mcp__/, '').replace(/__/g, '.'), summary: summarize(name, (block.input ?? {}) as Json, cwd), status: 'running' as ToolStatus};
@@ -102,7 +105,7 @@ export const claudeAdapter: Adapter = {
 					});
 					const ok = e.subtype === 'success' && !e.is_error;
 					if (!ok) events.push({type: 'error', message: typeof e.result === 'string' && e.result ? e.result : `Claude stopped: ${String(e.subtype)}`});
-					events.push({type: 'result', ok, text: typeof e.result === 'string' ? e.result : undefined});
+					events.push({type: 'result', ok, text: typeof e.result === 'string' ? e.result : undefined, ...(e.structured_output !== undefined ? {structured: e.structured_output} : {})});
 					break;
 				}
 			}

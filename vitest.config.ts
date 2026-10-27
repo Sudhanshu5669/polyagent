@@ -3,6 +3,7 @@ import {defineConfig} from 'vitest/config';
 export default defineConfig({
 	test: {
 		include: ['test/**/*.test.{ts,tsx}'],
-		testTimeout: 15_000,
+		// UI tests drive several real child processes; under a full parallel run they need headroom.
+		testTimeout: 45_000,
 	},
 });

@@ -1,0 +1,9 @@
+{"type":"thread.started","thread_id":"01a17e16-9d60-79f1-bebc-a6b0b1d85266"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I’ll read `math.ts` and summarize `add` in one sentence."}}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"/bin/zsh -lc 'rg --files -g math.ts -g AGENTS.md'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"/bin/zsh -lc 'rg --files -g math.ts -g AGENTS.md'","aggregated_output":"math.ts\n","exit_code":0,"status":"completed"}}
+{"type":"item.started","item":{"id":"item_2","type":"command_execution","command":"/bin/zsh -lc 'cat math.ts'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_2","type":"command_execution","command":"/bin/zsh -lc 'cat math.ts'","aggregated_output":"export const add = (a: number, b: number) => a + b;\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"`add` takes two numbers, `a` and `b`, and returns their sum."}}
+{"type":"turn.completed","usage":{"input_tokens":53274,"cached_input_tokens":48384,"cache_write_input_tokens":0,"output_tokens":113,"reasoning_output_tokens":0}}

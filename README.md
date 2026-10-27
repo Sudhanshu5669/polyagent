@@ -2,7 +2,7 @@
 
 Run Claude Code, Codex and Antigravity as one team from your terminal: an orchestrator plans the work and hands it to specialist employees (frontend, backend, art, reviewer…), running independent tasks in parallel.
 
-> Status: early. You can hire employees and chat with each one directly today. The orchestrator that runs them as a team is next.
+> Status: early. Hire employees, chat with them, and give the team work through the orchestrator. Tasks run one at a time for now; parallel work with isolated worktrees is next.
 
 ## Install
 
@@ -48,7 +48,20 @@ You are a backend engineer on this codebase...
 
 Anything that would need approval is blocked, never left hanging, and shows as *blocked* in the chat.
 
-Press `⏎` on an employee to chat with them directly. Their session is resumed between messages and across restarts; `ctrl+n` starts fresh, `ctrl+o` shows thinking and tool output, `ctrl+c` stops them. Codex and Antigravity support is marked experimental until it has been verified against real installs.
+Press `⏎` on an employee to chat with them directly. Their session is resumed between messages and across restarts; `ctrl+n` starts fresh, `ctrl+o` shows thinking and tool output, `ctrl+c` stops them.
+
+Claude Code and Codex are verified against real installs (Claude Code 2.1.311, codex-cli 0.164.0). Antigravity support is marked experimental: its output format isn't publicly documented, so it hasn't been confirmed yet.
+
+### Runs
+
+Press `r` and describe what you want. The orchestrator (Claude Code by default) looks at the repo, splits the request into tasks, and hands each one to the employee whose summary fits, written in the style their briefing asks for. polyagent itself does the scheduling:
+
+- a task starts when the tasks it depends on are done, and their reports are attached to its brief
+- each employee works on one task at a time and keeps one session for the whole run
+- finished reports, plus the repo's current uncommitted changes, go back to the orchestrator, which can ask for revisions, add follow-up work (like a review) or finish with a summary
+- limits that hold whatever the orchestrator decides: 30 orchestrator turns, 3 revisions per task, and invalid plans are reported back instead of run
+
+The run screen lists the orchestrator and every employee with their role, status and current task. `⏎` watches one agent's live output (`tab` for the next), `ctrl+t` shows the task list with briefs and reports, and anything you type goes to the orchestrator. `ctrl+c` stops the run. Changes stay uncommitted on your current branch for you to review. Each run is saved to `.polyagent/runs/<id>/run.json`.
 
 ### Commands
 

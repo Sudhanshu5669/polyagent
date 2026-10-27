@@ -1,19 +1,12 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {runTurn, type RunningTurn} from './agents/runner.js';
-import type {ToolStatus} from './agents/types.js';
 import type {Employee} from './employees.js';
 import {readJson, writeJson} from './fs.js';
+import {TurnRecorder, type ChatEntry} from './transcript.js';
 import type {ProviderId} from './providers.js';
 
-export type ChatEntry =
-	| {kind: 'user'; text: string; at: number}
-	| {kind: 'text'; text: string}
-	| {kind: 'thinking'; text: string}
-	| {kind: 'tool'; id: string; name: string; summary: string; status: ToolStatus; output?: string}
-	| {kind: 'error'; message: string}
-	| {kind: 'note'; text: string}
-	| {kind: 'turn'; ok: boolean; cancelled: boolean; durationMs: number; costUsd?: number; inputTokens?: number; outputTokens?: number};
+export type {ChatEntry} from './transcript.js';
 
 interface SessionFile {
 	provider: ProviderId;
@@ -99,13 +92,11 @@ export class EmployeeChat {
 		}
 
 		this.push({kind: 'user', text: prompt, at: Date.now()});
-		// Tool ids are only unique within a turn (Codex numbers items item_1, item_2… every turn).
-		const turnStart = this.entries.length;
 		this.working = true;
 		this.startedAt = Date.now();
 		this.changed();
 
-		let usage: Pick<Extract<ChatEntry, {kind: 'turn'}>, 'costUsd' | 'inputTokens' | 'outputTokens'> = {};
+		const recorder = new TurnRecorder(this.entries, () => this.changed());
 		const turn = runTurn(
 			binary,
 			employee.provider,
@@ -118,42 +109,12 @@ export class EmployeeChat {
 				permissions: employee.permissions,
 			},
 			event => {
-				switch (event.type) {
-					case 'session':
-						this.session = {provider: employee.provider, sessionId: event.sessionId};
-						this.sessionWrite = writeJson(this.sessionFile, this.session);
-						break;
-					case 'text': {
-						const last = this.entries.at(-1);
-						if (event.delta && last?.kind === 'text') {
-							last.text += event.text;
-							this.changed();
-						} else this.push({kind: 'text', text: event.text});
-						break;
-					}
-
-					case 'thinking':
-						this.push({kind: 'thinking', text: event.text});
-						break;
-					case 'tool': {
-						const existing = this.entries.slice(turnStart).find(e => e.kind === 'tool' && e.id === event.id);
-						const {type: _, ...tool} = event;
-						if (existing) {
-							Object.assign(existing, tool);
-							this.changed();
-						} else this.push({kind: 'tool', ...tool});
-						break;
-					}
-
-					case 'usage':
-						usage = {costUsd: event.costUsd, inputTokens: event.inputTokens, outputTokens: event.outputTokens};
-						break;
-					case 'error':
-						// Reported once at the end of the turn, with the exit status.
-						break;
-					case 'result':
-						break;
+				if (event.type === 'session') {
+					this.session = {provider: employee.provider, sessionId: event.sessionId};
+					this.sessionWrite = writeJson(this.sessionFile, this.session);
 				}
+
+				recorder.apply(event);
 			},
 		);
 		this.turn = turn;
@@ -161,9 +122,7 @@ export class EmployeeChat {
 		const outcome = await turn.done;
 		this.turn = undefined;
 		await this.sessionWrite;
-		for (const entry of this.entries.slice(turnStart)) if (entry.kind === 'tool' && entry.status === 'running') entry.status = outcome.ok ? 'done' : 'failed';
-		if (outcome.error && !outcome.cancelled) this.push({kind: 'error', message: outcome.error});
-		this.push({kind: 'turn', ok: outcome.ok, cancelled: outcome.cancelled, durationMs: Date.now() - this.startedAt, ...usage});
+		recorder.finish(outcome);
 		this.working = false;
 		this.startedAt = undefined;
 		this.changed();

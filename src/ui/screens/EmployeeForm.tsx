@@ -90,7 +90,8 @@ export function EmployeeForm({workspaceDir, employee, takenIds, detections, defa
 
 	const field = FIELDS[row]!;
 	const dirty = JSON.stringify(draft) !== JSON.stringify(initial);
-	const installed = (id: ProviderId) => detections[id]?.status === 'found';
+	// Still being checked counts as installed, so the warning doesn't flash on screen while detection runs.
+	const installed = (id: ProviderId) => detections[id] === undefined || detections[id].status === 'found';
 
 	const set = <K extends keyof Draft>(key: K, value: Draft[K]) => setDraft(d => (d ? {...d, [key]: value} : d));
 

@@ -3,9 +3,11 @@ import {useCallback, useEffect, useMemo, useState} from 'react';
 import {ChatHub, type EmployeeChat} from '../core/chat.js';
 import {saveGlobalConfig, type GlobalConfig} from '../core/config.js';
 import {loadContext, type AppContext} from '../core/context.js';
-import {applyDetections, detectAll, type Detection} from '../core/detect.js';
+import {applyDetections, detectProvider, type Detection} from '../core/detect.js';
 import {deleteEmployee, loadEmployees, type BrokenEmployee, type Employee} from '../core/employees.js';
 import {PROVIDER_IDS, type ProviderId} from '../core/providers.js';
+import {listRuns, RunEngine, type RunSummary} from '../core/run/engine.js';
+import {isFinished} from '../core/run/types.js';
 import {listWorkspaceItems} from '../core/workspace.js';
 import {openInEditor} from './editor.js';
 import {Chat} from './screens/Chat.js';
@@ -13,12 +15,14 @@ import {Dashboard} from './screens/Dashboard.js';
 import {EmployeeForm} from './screens/EmployeeForm.js';
 import {Help} from './screens/Help.js';
 import {InitWorkspace} from './screens/InitWorkspace.js';
+import {NewRun} from './screens/NewRun.js';
+import {RunView} from './screens/RunView.js';
 import {Settings} from './screens/Settings.js';
 import {Setup} from './screens/Setup.js';
 import {icons, theme} from './theme.js';
 
 type Screen =
-	| {name: 'setup' | 'init' | 'dashboard' | 'settings' | 'help'}
+	| {name: 'setup' | 'init' | 'dashboard' | 'settings' | 'help' | 'new-run' | 'run'}
 	| {name: 'chat'; employee: Employee; chat: EmployeeChat}
 	| {name: 'employee-form'; employee?: Employee};
 type Detections = Partial<Record<ProviderId, Detection>>;
@@ -28,15 +32,24 @@ function firstScreen(ctx: AppContext): Screen {
 	return {name: ctx.workspace.exists ? 'dashboard' : 'init'};
 }
 
-export function App({initial}: {initial: AppContext}) {
+interface AppProps {
+	initial: AppContext;
+	/** Loaded before the first render so the dashboard never flashes an empty team. */
+	initialTeam?: {employees: Employee[]; broken: BrokenEmployee[]};
+	initialRuns?: RunSummary[];
+}
+
+export function App({initial, initialTeam, initialRuns}: AppProps) {
 	const {exit, suspendTerminal} = useApp();
 	const [ctx, setCtx] = useState(initial);
 	const [screen, setScreen] = useState<Screen>(() => firstScreen(initial));
 	const [detections, setDetections] = useState<Detections>({});
-	const [team, setTeam] = useState<{employees: Employee[]; broken: BrokenEmployee[]}>({employees: [], broken: []});
+	const [team, setTeam] = useState<{employees: Employee[]; broken: BrokenEmployee[]}>(initialTeam ?? {employees: [], broken: []});
 	const [presets, setPresets] = useState<string[]>([]);
 	const [selectedId, setSelectedId] = useState<string>();
 	const [notice, setNotice] = useState<string>();
+	const [run, setRun] = useState<RunEngine>();
+	const [runs, setRuns] = useState<RunSummary[]>(initialRuns ?? []);
 	const hub = useMemo(() => new ChatHub(ctx.workspace.dir), [ctx.workspace.dir]);
 
 	const reload = useCallback(async () => {
@@ -48,13 +61,20 @@ export function App({initial}: {initial: AppContext}) {
 		const [loaded, items] = await Promise.all([loadEmployees(ctx.workspace.dir), listWorkspaceItems(ctx.workspace.dir)]);
 		setTeam(loaded);
 		setPresets(items.presets);
+		setRuns(await listRuns(ctx.workspace.dir, 5));
 	}, [ctx.workspace.exists, ctx.workspace.dir]);
 
 	// Saved providers are re-checked in the background so launch stays instant.
+	// Each one shows up as soon as it answers, so one slow CLI doesn't hold up the others.
 	useEffect(() => {
 		if (screen.name === 'setup') return;
-		void detectAll(initial.global).then(async results => {
-			setDetections(Object.fromEntries(results.map(d => [d.provider, d])));
+		const checks = PROVIDER_IDS.map(id =>
+			detectProvider(id, initial.global.providers[id]).then(d => {
+				setDetections(prev => ({...prev, [id]: d}));
+				return d;
+			}),
+		);
+		void Promise.all(checks).then(async results => {
 			const next = applyDetections(initial.global, results);
 			if (JSON.stringify(next) !== JSON.stringify(initial.global)) {
 				await saveGlobalConfig(next);
@@ -66,15 +86,43 @@ export function App({initial}: {initial: AppContext}) {
 
 	useEffect(() => void reloadTeam(), [reloadTeam]);
 
-	// ctrl+c stops running employees first; with nothing running it quits.
+	const runActive = run !== undefined && !isFinished(run.state.status);
+
+	// ctrl+c stops whatever is running first (a run, direct chats); with nothing running it quits.
 	useInput((input, key) => {
 		if (!(key.ctrl && input === 'c')) return;
 		const working = hub.workingCount();
-		if (working > 0) {
+		if (runActive) {
+			run.cancel();
+			hub.cancelAll();
+			setNotice('Stopped the run. Press ctrl+c again to quit.');
+		} else if (working > 0) {
 			hub.cancelAll();
 			setNotice(`Stopped ${working} employee${working === 1 ? '' : 's'}. Press ctrl+c again to quit.`);
 		} else exit();
 	});
+
+	const startRun = (request: string) => {
+		const engine = new RunEngine(
+			{
+				workspaceDir: ctx.workspace.dir,
+				cwd: ctx.workspace.root,
+				branch: ctx.workspace.git?.branch,
+				employees: team.employees,
+				orchestrator: ctx.settings.values.orchestrator,
+				binaryFor,
+				autoRun: ctx.settings.values.autoRun,
+				maxParallel: ctx.settings.values.maxParallel,
+				// One task at a time until employees get isolated worktrees.
+				concurrency: 1,
+			},
+			request,
+		);
+		engine.start();
+		void engine.done.then(reloadTeam);
+		setRun(engine);
+		setScreen({name: 'run'});
+	};
 
 	const binaryFor = (provider: ProviderId): string | undefined => {
 		const d = detections[provider];
@@ -127,6 +175,21 @@ export function App({initial}: {initial: AppContext}) {
 			);
 		case 'help':
 			return <Help onBack={toDashboard} />;
+		case 'new-run':
+			return (
+				<NewRun
+					employees={team.employees}
+					orchestrator={ctx.settings.values.orchestrator}
+					detections={detections}
+					autoRun={ctx.settings.values.autoRun}
+					root={ctx.workspace.root}
+					branch={ctx.workspace.git?.branch}
+					onStart={startRun}
+					onBack={toDashboard}
+				/>
+			);
+		case 'run':
+			return run ? <RunView run={run} onBack={toDashboard} /> : null;
 		case 'chat':
 			return (
 				<Chat
@@ -161,6 +224,12 @@ export function App({initial}: {initial: AppContext}) {
 					broken={team.broken}
 					presets={presets}
 					hub={hub}
+					run={run}
+					runs={runs}
+					onRun={() => {
+						setNotice(undefined);
+						setScreen({name: runActive ? 'run' : 'new-run'});
+					}}
 					selectedId={selectedId}
 					onSelect={id => {
 						setSelectedId(id);

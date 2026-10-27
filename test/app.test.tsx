@@ -74,6 +74,44 @@ describe('App', () => {
 		ui.unmount();
 	});
 
+	it('starts a run, shows employees working, and shows the summary', async () => {
+		const fake = path.join(root, 'fake');
+		fs.mkdirSync(fake);
+		fs.rmSync(path.join(root, 'bin', 'claude'));
+		fs.symlinkSync(path.join(import.meta.dirname, 'fixtures', 'fake-agent.mjs'), path.join(root, 'bin', 'claude'));
+		// The fake agent is a Node script; keep PATH minimal so real CLIs on this machine stay out of the test.
+		process.env.PATH = [path.join(root, 'bin'), path.dirname(process.execPath), '/usr/bin', '/bin'].join(path.delimiter);
+		process.env.FAKE_DIR = fake;
+		process.env.FAKE_SLEEP_MS = '600';
+		fs.writeFileSync(
+			path.join(fake, 'decisions.json'),
+			JSON.stringify([
+				{note: 'One task for Rex', tasks: [{id: 'review', title: 'Review the repo', assignee: 'rex', brief: 'Look around.', depends_on: []}]},
+				{finish: 'Rex reviewed everything. All good.'},
+			]),
+		);
+
+		const repo = path.join(root, 'repo');
+		fs.mkdirSync(repo);
+		await initWorkspace(repo, 'ignore-all');
+		await saveGlobalConfig({version: 1, providers: {claude: {path: path.join(root, 'bin', 'claude'), source: 'path'}}, settings: {}});
+		fs.writeFileSync(path.join(repo, '.polyagent', 'employees', 'rex.md'), '---\nname: Rex\nrole: reviewer\nprovider: claude\n---\nReview.');
+
+		const ui = render(<App initial={await loadContext(repo)} />);
+		const frame = () => ui.lastFrame() ?? '';
+		await waitFor(() => frame().includes('Rex [reviewer]') && frame().includes('claude ✓'), frame);
+		await press(ui.stdin, 'r');
+		await waitFor(() => frame().includes('What should the team do?'), frame);
+		await press(ui.stdin, 'Review the repo please', ENTER);
+		await waitFor(() => /Rex\s+claude\s+\[reviewer\]\s+working\s+Review the repo/.test(frame()), frame);
+		await waitFor(() => frame().includes('Done after') && frame().includes('Rex reviewed everything. All good.'), frame);
+
+		// Back on the dashboard the run is listed.
+		await press(ui.stdin, ESC);
+		await waitFor(() => frame().includes('RUNS') && frame().includes('✓ Review the repo please'), frame);
+		ui.unmount();
+	});
+
 	it('ctrl+c stops a running employee instead of quitting', async () => {
 		fs.writeFileSync(path.join(root, 'bin', 'claude'), '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "2.1.0 (Claude Code)"; exit 0; fi\nsleep 60\n', {mode: 0o755});
 		const repo = path.join(root, 'repo');
