@@ -1,0 +1,46 @@
+{
+  "name": "polyagent",
+  "version": "0.1.0",
+  "description": "Run Claude Code, Codex and Antigravity as a team: an orchestrator plus specialist employees, in your terminal.",
+  "type": "module",
+  "bin": {
+    "polyagent": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "tsx src/cli.tsx",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+  },
+  "keywords": [
+    "agents",
+    "claude",
+    "codex",
+    "antigravity",
+    "orchestrator",
+    "tui",
+    "cli"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "ink": "^8.0.0",
+    "react": "^19.3.1",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@types/react": "^19.3.0",
+    "ink-testing-library": "^4.0.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  }
+}
