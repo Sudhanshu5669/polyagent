@@ -24,7 +24,7 @@ export function gitStatus(dir: string): string[] {
 }
 
 /** Poll until check() passes. `context` is included in the timeout error, e.g. the last rendered frame. */
-export async function waitFor(check: () => boolean, context?: () => string | undefined, timeout = 10_000): Promise<void> {
+export async function waitFor(check: () => boolean, context?: () => string | undefined, timeout = 20_000): Promise<void> {
 	const start = Date.now();
 	while (!check()) {
 		if (Date.now() - start > timeout) throw new Error(`waitFor timed out${context ? `\n${context()}` : ''}`);

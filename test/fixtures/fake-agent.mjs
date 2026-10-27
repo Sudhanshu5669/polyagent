@@ -49,11 +49,11 @@ if (orchestrator) {
 const attemptFile = path.join(dir, `attempts-${taskId}`);
 const attempt = fs.existsSync(attemptFile) ? Number(fs.readFileSync(attemptFile, 'utf8')) + 1 : 1;
 fs.writeFileSync(attemptFile, String(attempt));
-const sleep = Number(process.env.FAKE_SLEEP_MS ?? 0);
+const sleep = Number(process.env[`FAKE_SLEEP_MS_${taskId}`] ?? process.env.FAKE_SLEEP_MS ?? 0);
 if (sleep) await new Promise(r => setTimeout(r, sleep));
 log({role: 'employee', task: taskId, attempt});
 
-if (process.env.FAKE_WRITE) fs.writeFileSync(path.join(process.cwd(), `${taskId}.txt`), `written by ${taskId}\n`);
+if (process.env.FAKE_WRITE) fs.writeFileSync(path.join(process.cwd(), process.env.FAKE_WRITE === '1' ? `${taskId}.txt` : process.env.FAKE_WRITE), `written by ${taskId} (attempt ${attempt})\n`);
 
 if (process.env.FAKE_FAIL === taskId && attempt === 1) {
 	console.error(`Error: ${taskId} exploded`);

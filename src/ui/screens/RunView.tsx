@@ -224,6 +224,12 @@ export function RunView({run, onBack}: Props) {
 					<Box flexDirection="column" marginTop={1}>
 						<Text color={theme.muted}>Brief</Text>
 						<Paragraph>{clip(task.brief, 6, width)}</Paragraph>
+						{task.files?.length ? (
+							<Text wrap="truncate">
+								<Text color={theme.muted}>Changed </Text>
+								{task.files.join(', ')}
+							</Text>
+						) : null}
 						{task.report || task.error ? (
 							<>
 								<Text color={theme.muted}>{task.error ? 'Error' : 'Report'}</Text>
@@ -256,6 +262,20 @@ export function RunView({run, onBack}: Props) {
 				<Text color={theme.muted} wrap="truncate">
 					{'    '}
 					{state.orchestrator.note}
+				</Text>
+			) : null}
+			{state.isolation ? (
+				<Text color={theme.muted} wrap="truncate">
+					{'    '}
+					{state.isolation.mode === 'worktrees'
+						? 'Parallel: each employee has their own worktree; finished work is merged into your working tree.'
+						: `One task at a time: ${state.isolation.reason}.`}
+				</Text>
+			) : null}
+			{state.unapplied.length ? (
+				<Text color={theme.warn} wrap="truncate">
+					{'    '}
+					{icons.warn} You changed {state.unapplied.join(', ')} during the run; the team's versions were kept aside.
 				</Text>
 			) : null}
 

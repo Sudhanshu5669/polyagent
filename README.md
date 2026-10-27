@@ -2,7 +2,7 @@
 
 Run Claude Code, Codex and Antigravity as one team from your terminal: an orchestrator plans the work and hands it to specialist employees (frontend, backend, art, reviewer…), running independent tasks in parallel.
 
-> Status: early. Hire employees, chat with them, and give the team work through the orchestrator. Tasks run one at a time for now; parallel work with isolated worktrees is next.
+> Status: early. Hire employees, chat with them, and give the team work through the orchestrator. Employees work in parallel, each in their own git worktree.
 
 ## Install
 
@@ -57,9 +57,18 @@ Claude Code and Codex are verified against real installs (Claude Code 2.1.311, c
 Press `r` and describe what you want. The orchestrator (Claude Code by default) looks at the repo, splits the request into tasks, and hands each one to the employee whose summary fits, written in the style their briefing asks for. polyagent itself does the scheduling:
 
 - a task starts when the tasks it depends on are done, and their reports are attached to its brief
+- in a git repo, every employee works in their own git worktree, so independent tasks run at the same time (cap it with `maxParallel`); outside git, tasks run one at a time in the folder itself
 - each employee works on one task at a time and keeps one session for the whole run
 - finished reports, plus the repo's current uncommitted changes, go back to the orchestrator, which can ask for revisions, add follow-up work (like a review) or finish with a summary
 - limits that hold whatever the orchestrator decides: 30 orchestrator turns, 3 revisions per task, and invalid plans are reported back instead of run
+
+#### How parallel work reaches your files
+
+When a run starts, polyagent snapshots your working tree exactly as it is (uncommitted and untracked files included, your index and branch untouched) and gives each employee a worktree from that snapshot, in your cache folder. Ignored dependency folders (`node_modules`, `.venv`, `venv`) are linked in so tests and builds work. When a task finishes, its changes are three-way merged with everything merged so far and written into your working tree. Nothing is committed to your branch.
+
+- If two tasks change the same lines, the second is reported to the orchestrator as a conflict and nothing of it is applied; a revision starts from the merged code.
+- If you edit a file yourself during the run and an employee changes it too, your version is kept. The run's summary says which files, and the team's versions stay available: `git checkout refs/polyagent/runs/<id> -- <files>`.
+- Every run keeps a ref, `refs/polyagent/runs/<id>`, with the full history of what each task merged.
 
 The run screen lists the orchestrator and every employee with their role, status and current task. `⏎` watches one agent's live output (`tab` for the next), `ctrl+t` shows the task list with briefs and reports, and anything you type goes to the orchestrator. `ctrl+c` stops the run. Changes stay uncommitted on your current branch for you to review. Each run is saved to `.polyagent/runs/<id>/run.json`.
 

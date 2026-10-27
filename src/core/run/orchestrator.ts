@@ -91,9 +91,12 @@ Your own shell commands may be blocked. polyagent attaches the current uncommitt
 Reply only with the JSON decision. Leave arrays empty and finish null when they don't apply.`;
 }
 
-export function planPrompt(request: string, dirty?: string): string {
+export function planPrompt(request: string, dirty?: string, parallel = false): string {
 	const before = dirty ? `\n\nBefore this run started, the working tree already had uncommitted changes (not made by your team):\n${dirty}` : '';
-	return `The user's request:\n\n${request}${before}\n\nPlan the work and hand out the first tasks.`;
+	const mode = parallel
+		? 'Employees each work in their own copy of the repository, so independent tasks run at the same time. Changes are merged when a task finishes; two tasks editing the same lines will conflict, so split work by file or area.'
+		: 'Tasks run one at a time in the shared working tree.';
+	return `The user's request:\n\n${request}${before}\n\n${mode}\n\nPlan the work and hand out the first tasks.`;
 }
 
 export type Update = {kind: 'task'; task: Task} | {kind: 'user'; text: string};
@@ -258,16 +261,31 @@ function reaches(from: string, target: string, all: Map<string, Task>, seen: Set
 }
 
 /** What an employee receives for a task: the brief, context from tasks it depends on, and any revision feedback. */
-export function taskPrompt(task: Task, tasks: Task[], employees: Employee[], cwd: string, branch?: string): string {
+export function taskPrompt(
+	task: Task,
+	tasks: Task[],
+	employees: Employee[],
+	cwd: string,
+	branch?: string,
+	options: {isolated?: boolean; conflicts?: string[]} = {},
+): string {
 	const name = (id: string) => employees.find(e => e.id === id)?.name ?? id;
 	const parts = [`Task "${task.title}" (id: ${task.id}) from the orchestrator.`, task.brief];
 
 	const deps = task.dependsOn.map(id => tasks.find(t => t.id === id)).filter((t): t is Task => !!t?.report);
 	if (deps.length) parts.push(`Context from earlier tasks:\n${deps.map(d => `- ${d.title} (${name(d.assignee)}):\n${trimReport(d.report!, 2500)}`).join('\n')}`);
+	if (options.conflicts?.length) {
+		parts.push(
+			`Your previous attempt clashed with changes another employee made to ${options.conflicts.join(', ')}, so it was not applied. Your copy now has everyone's latest merged work: redo your change on top of it.`,
+		);
+	}
+
 	if (task.feedback) parts.push(`The orchestrator reviewed your previous attempt and wants changes:\n${task.feedback}`);
 
 	parts.push(
-		`You're working in ${cwd}${branch ? ` on branch ${branch}` : ''}. Other employees may be working on other parts of this repository at the same time: stay within your task.`,
+		options.isolated
+			? `You're working in your own copy of the repository (a git worktree at ${cwd}), made for this run. Other employees work in their own copies at the same time. polyagent merges your changes into the user's working tree when you finish: don't commit, don't create or switch branches, and stay within your task.`
+			: `You're working in ${cwd}${branch ? ` on branch ${branch}` : ''}. Other employees may be working on other parts of this repository: stay within your task.`,
 		'When you are done, end with a short report: what you changed (files), how you checked it, and anything unfinished or blocked.',
 	);
 	return parts.join('\n\n');

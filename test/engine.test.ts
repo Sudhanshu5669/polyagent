@@ -59,6 +59,8 @@ function engine(overrides: Partial<EngineOptions> = {}, request = 'Add a checkou
 			binaryFor: () => FAKE,
 			autoRun: true,
 			maxParallel: null,
+			// Outside the repo, like the real cache folder.
+			cacheDir: path.join(tmpDir(), 'cache'),
 			...overrides,
 		},
 		request,
@@ -191,6 +193,63 @@ describe('RunEngine', () => {
 		const overlap = (x: Call, y: Call) => x.started < y.ended && y.started < x.ended;
 		expect(overlap(byTask.a1!, byTask.b!)).toBe(true);
 		expect(overlap(byTask.a1!, byTask.a2!)).toBe(false);
+	});
+});
+
+describe('RunEngine with worktrees', () => {
+	function gitRepo() {
+		execFileSync('git', ['init', '-q', '-b', 'main'], {cwd: dir});
+		fs.writeFileSync(path.join(dir, 'README.md'), 'hello\n');
+		execFileSync('git', ['add', '.'], {cwd: dir});
+		execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'base'], {cwd: dir});
+	}
+
+	it('runs independent tasks in parallel in separate worktrees and merges both', async () => {
+		gitRepo();
+		process.env.FAKE_WRITE = '1';
+		// Long enough to overlap even when setting up the second worktree is slow on a loaded machine.
+		process.env.FAKE_SLEEP_MS = '4000';
+		script({tasks: [task('api', 'maya'), task('ui', 'leo')]}, {}, {finish: 'done'});
+		const run = engine();
+		await run.done;
+
+		expect(run.state.isolation?.mode).toBe('worktrees');
+		const byTask = Object.fromEntries(calls().filter(c => c.task).map(c => [c.task, c]));
+		expect(byTask.api!.started < byTask.ui!.ended && byTask.ui!.started < byTask.api!.ended).toBe(true);
+		expect(byTask.api!.prompt).toContain('your own copy of the repository');
+		expect(fs.readFileSync(path.join(dir, 'api.txt'), 'utf8')).toBe('written by api (attempt 1)\n');
+		expect(fs.readFileSync(path.join(dir, 'ui.txt'), 'utf8')).toBe('written by ui (attempt 1)\n');
+		expect(run.state.tasks.map(t => t.files)).toEqual([['api.txt'], ['ui.txt']]);
+		// Worktrees are gone afterwards; the branch is unchanged.
+		expect(execFileSync('git', ['worktree', 'list'], {cwd: dir, encoding: 'utf8'}).trim().split('\n')).toHaveLength(1);
+		expect(execFileSync('git', ['branch', '--show-current'], {cwd: dir, encoding: 'utf8'}).trim()).toBe('main');
+	});
+
+	it('reports a clash, and the revision starts from the merged code', async () => {
+		gitRepo();
+		process.env.FAKE_WRITE = 'shared.txt';
+		// "one" merges first; "two" finishes later and clashes.
+		process.env.FAKE_SLEEP_MS_two = '1500';
+		script({tasks: [task('one', 'maya'), task('two', 'leo')]}, {}, {revisions: [{task: 'two', feedback: 'Redo it'}]}, {}, {finish: 'done'});
+		const run = engine();
+		await run.done;
+
+		const two = run.state.tasks.find(t => t.id === 'two')!;
+		expect(two).toMatchObject({status: 'done', revisions: 1});
+		const orchestratorPrompts = calls().filter(c => c.role === 'orchestrator').map(c => c.prompt).join('\n');
+		expect(orchestratorPrompts).toMatch(/clash with work already merged/);
+		const retry = calls().filter(c => c.task === 'two')[1]!;
+		expect(retry.prompt).toContain('clashed with changes another employee made to shared.txt');
+		expect(fs.readFileSync(path.join(dir, 'shared.txt'), 'utf8')).toBe('written by two (attempt 2)\n');
+	});
+
+	it('falls back to one task at a time outside git', async () => {
+		script({tasks: [task('a', 'maya'), task('b', 'leo')]}, {}, {finish: 'done'});
+		const run = engine();
+		await run.done;
+		expect(run.state.isolation).toEqual({mode: 'shared', reason: "this folder isn't a git repository"});
+		const [a, b] = calls().filter(c => c.task);
+		expect(b!.started).toBeGreaterThanOrEqual(a!.ended);
 	});
 });
 

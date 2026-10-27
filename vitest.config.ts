@@ -5,5 +5,7 @@ export default defineConfig({
 		include: ['test/**/*.test.{ts,tsx}'],
 		// UI tests drive several real child processes; under a full parallel run they need headroom.
 		testTimeout: 45_000,
+		// Git- and process-heavy files starve each other when they all run at once.
+		maxWorkers: 4,
 	},
 });

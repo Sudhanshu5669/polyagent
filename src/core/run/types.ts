@@ -18,6 +18,10 @@ export interface Task {
 	feedback?: string;
 	report?: string;
 	error?: string;
+	/** Files the task changed (when employees work in worktrees). */
+	files?: string[];
+	/** Files that clashed with work merged earlier; the task's changes were not applied. */
+	conflicts?: string[];
 	startedAt?: number;
 	endedAt?: number;
 }
@@ -45,6 +49,10 @@ export interface RunState {
 	/** One provider session per employee per run, so later tasks keep earlier context. */
 	employeeSessions: Record<string, string>;
 	costUsd: number;
+	/** How employees share the repository: their own worktrees in parallel, or the working tree one at a time. */
+	isolation?: {mode: 'worktrees'; ref: string; base: string} | {mode: 'shared'; reason: string};
+	/** Merged files that couldn't be written to the user's working tree because they changed there during the run. */
+	unapplied: string[];
 }
 
 export interface RunFile {

@@ -54,7 +54,7 @@ export const SETTINGS_META: SettingMeta[] = [
 		format: v => (v === null ? 'Unlimited' : `${v} at a time`),
 		help: v =>
 			v === null
-				? 'Every task that is ready runs at once. Set a limit if you hit provider rate limits.'
+				? 'Every task that is ready runs at once, each employee in their own git worktree. Set a limit if you hit provider rate limits.'
 				: `At most ${v} employees work at the same time.`,
 	}),
 ];

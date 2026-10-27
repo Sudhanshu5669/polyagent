@@ -5,6 +5,7 @@ import {employeeSystemPrompt} from '../chat.js';
 import {slugify, type Employee} from '../employees.js';
 import {readJson, writeJson} from '../fs.js';
 import {workingTreeChanges} from '../git.js';
+import {WorktreeIsolation} from './worktrees.js';
 import {PROVIDERS, type ProviderId} from '../providers.js';
 import {TurnRecorder, type ChatEntry} from '../transcript.js';
 import {
@@ -33,8 +34,15 @@ export interface EngineOptions {
 	autoRun: boolean;
 	/** User setting; null = no limit. */
 	maxParallel: number | null;
-	/** Hard cap from the engine itself. Tasks share one working tree until worktree isolation lands, so this is 1 by default. */
+	/**
+	 * 'worktrees' (default): each employee works in their own git worktree and tasks run in parallel;
+	 * falls back to 'shared' (one task at a time in the working tree) where worktrees can't be used.
+	 */
+	isolation?: 'worktrees' | 'shared';
+	/** Override the engine's own cap on simultaneous tasks (tests). */
 	concurrency?: number;
+	/** Where worktrees live; defaults to the user cache folder. */
+	cacheDir?: string;
 }
 
 /** Guard rails that hold no matter what the orchestrator decides. */
@@ -74,6 +82,7 @@ export class RunEngine {
 	private saveTimer?: NodeJS.Timeout;
 	private saving: Promise<void> = Promise.resolve();
 	private resolveDone!: () => void;
+	private iso?: WorktreeIsolation;
 
 	constructor(
 		private readonly options: EngineOptions,
@@ -89,6 +98,7 @@ export class RunEngine {
 			tasks: [],
 			employeeSessions: {},
 			costUsd: 0,
+			unapplied: [],
 		};
 		this.done = new Promise(resolve => (this.resolveDone = resolve));
 	}
@@ -108,7 +118,29 @@ export class RunEngine {
 
 	start(): void {
 		this.changed();
-		void workingTreeChanges(this.options.cwd, 2000).then(dirty => this.orchestratorTurn(planPrompt(this.state.request, dirty)));
+		void this.setUp();
+	}
+
+	private async setUp(): Promise<void> {
+		const {options, state} = this;
+		const dirty = await workingTreeChanges(options.cwd, 2000);
+		if (options.isolation !== 'shared') {
+			const iso = await WorktreeIsolation.create(options.cwd, state.id, options.cacheDir);
+			if (iso instanceof WorktreeIsolation) {
+				this.iso = iso;
+				state.isolation = {mode: 'worktrees', ref: iso.ref, base: iso.base};
+			} else state.isolation = {mode: 'shared', reason: iso.reason};
+		} else state.isolation = {mode: 'shared', reason: 'parallel work is turned off'};
+
+		this.log(ORCHESTRATOR).push({
+			kind: 'note',
+			text:
+				state.isolation.mode === 'worktrees'
+					? 'Employees work in their own git worktrees, in parallel. Finished work is merged into your working tree.'
+					: `Tasks run one at a time in your working tree: ${state.isolation.reason}.`,
+		});
+		if (isFinished(state.status)) return;
+		await this.orchestratorTurn(planPrompt(state.request, dirty, state.isolation.mode === 'worktrees'));
 	}
 
 	/** Start a plan that is waiting for approval (autoRun off). */
@@ -276,7 +308,7 @@ export class RunEngine {
 		}
 
 		if (state.status === 'running') {
-			const limit = Math.min(options.concurrency ?? 1, options.maxParallel ?? Number.POSITIVE_INFINITY);
+			const limit = Math.min(options.concurrency ?? (this.iso ? Number.POSITIVE_INFINITY : 1), options.maxParallel ?? Number.POSITIVE_INFINITY);
 			for (const task of state.tasks) {
 				if (state.tasks.filter(t => t.status === 'running').length >= limit) break;
 				// An employee is one worker: one task at a time.
@@ -307,6 +339,25 @@ export class RunEngine {
 		const binary = options.binaryFor(employee.provider);
 		const log = this.log(employee.id);
 		log.push({kind: 'brief', taskId: task.id, title: task.title, text: task.feedback ? `${task.brief}\n\nRequested changes:\n${task.feedback}` : task.brief});
+		const conflicts = task.conflicts;
+		task.conflicts = undefined;
+		let space: {cwd: string; start?: string} = {cwd: options.cwd};
+		if (binary && this.iso) {
+			try {
+				space = await this.iso.prepare(employee.id);
+			} catch (error) {
+				task.status = 'failed';
+				task.error = `Couldn't set up ${employee.name}'s worktree: ${(error as Error).message}`;
+				log.push({kind: 'error', message: task.error});
+				this.updates.push({kind: 'task', task: {...task}});
+				this.pump();
+				return;
+			}
+
+			// The run ended, or the orchestrator cancelled this task, while the worktree was being prepared.
+			if (isFinished(state.status) || (task.status as TaskStatus) === 'cancelled') return;
+		}
+
 		if (!binary) {
 			task.status = 'failed';
 			task.error = `${employee.name} runs on ${PROVIDERS[employee.provider].label}, which isn't installed.`;
@@ -321,8 +372,8 @@ export class RunEngine {
 			binary,
 			employee.provider,
 			{
-				prompt: taskPrompt(task, state.tasks, options.employees, options.cwd, options.branch),
-				cwd: options.cwd,
+				prompt: taskPrompt(task, state.tasks, options.employees, space.cwd, options.branch, {isolated: this.iso !== undefined, conflicts}),
+				cwd: space.cwd,
 				systemPrompt: employeeSystemPrompt(employee),
 				sessionId: state.employeeSessions[employee.id],
 				model: employee.model,
@@ -347,14 +398,44 @@ export class RunEngine {
 			return;
 		}
 
-		if (outcome.ok) {
-			task.status = 'done';
-			task.feedback = undefined;
-		} else {
-			task.status = 'failed';
-			task.error = outcome.error ?? 'failed';
+		// The task stays 'running' until its changes are merged, so nothing treats it as settled too early.
+		let status: TaskStatus = outcome.ok ? 'done' : 'failed';
+		let error = outcome.ok ? undefined : (outcome.error ?? 'failed');
+
+		// Partial work from a failed task is merged too, as it would be in a shared working tree.
+		if (this.iso && space.start) {
+			try {
+				const merge = await this.iso.finish(employee.id, task.id, space.start);
+				task.files = merge.files;
+				if (merge.conflicts) {
+					status = 'failed';
+					task.conflicts = merge.conflicts;
+					error = `Its changes clash with work already merged from other tasks (${merge.conflicts.join(', ')}), so they were not applied.`;
+					log.push({kind: 'error', message: error});
+				} else if (merge.files.length) {
+					log.push({kind: 'note', text: `Merged into your working tree: ${merge.files.join(', ')}`});
+				}
+
+				if (merge.unapplied?.length) {
+					state.unapplied = [...new Set([...state.unapplied, ...merge.unapplied])];
+					log.push({kind: 'note', text: `Not written to your working tree because you changed them during the run: ${merge.unapplied.join(', ')}`});
+				}
+			} catch (mergeError) {
+				status = 'failed';
+				error = `Couldn't merge the task's changes: ${(mergeError as Error).message}`;
+				log.push({kind: 'error', message: error});
+			}
 		}
 
+		if (isFinished(state.status) || (task.status as TaskStatus) === 'cancelled') {
+			task.status = 'cancelled';
+			this.changed();
+			return;
+		}
+
+		task.status = status;
+		task.error = error;
+		if (status === 'done') task.feedback = undefined;
 		this.updates.push({kind: 'task', task: {...task}});
 		this.pump();
 	}
@@ -364,12 +445,20 @@ export class RunEngine {
 		if (isFinished(state.status)) return;
 		state.status = status;
 		state.summary = summary;
+		if (state.unapplied.length && state.isolation?.mode === 'worktrees') {
+			const files = state.unapplied.join(' ');
+			state.summary += `\n\nThese files changed in your working tree during the run, so the team's versions were not written over them: ${files}. To take the team's versions: git checkout ${state.isolation.ref} -- ${files}`;
+		}
+
 		state.endedAt = Date.now();
 		state.orchestrator.working = false;
 		for (const turn of this.turns.values()) turn.cancel();
 		for (const task of state.tasks) if (task.status === 'blocked' || task.status === 'ready' || task.status === 'running') task.status = 'cancelled';
 		this.changed();
-		void this.flush().then(() => this.resolveDone());
+		void (this.iso?.cleanup() ?? Promise.resolve())
+			.catch(() => {})
+			.then(() => this.flush())
+			.then(() => this.resolveDone());
 	}
 
 	// ── persistence ─────────────────────────────────────────────────────────

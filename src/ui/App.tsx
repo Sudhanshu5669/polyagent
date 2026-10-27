@@ -113,8 +113,6 @@ export function App({initial, initialTeam, initialRuns}: AppProps) {
 				binaryFor,
 				autoRun: ctx.settings.values.autoRun,
 				maxParallel: ctx.settings.values.maxParallel,
-				// One task at a time until employees get isolated worktrees.
-				concurrency: 1,
 			},
 			request,
 		);
@@ -184,6 +182,7 @@ export function App({initial, initialTeam, initialRuns}: AppProps) {
 					autoRun={ctx.settings.values.autoRun}
 					root={ctx.workspace.root}
 					branch={ctx.workspace.git?.branch}
+					parallel={ctx.workspace.git !== undefined}
 					onStart={startRun}
 					onBack={toDashboard}
 				/>
