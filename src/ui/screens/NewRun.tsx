@@ -30,7 +30,7 @@ export function NewRun({employees, orchestrator, detections, autoRun, root, bran
 
 	// Still being checked counts as available; only a finished check that came back negative blocks.
 	const orchestratorMissing = detections[orchestrator] !== undefined && detections[orchestrator].status !== 'found';
-	const blocked = employees.length === 0 ? 'Hire at least one employee first.' : orchestratorMissing ? `The orchestrator runs on ${PROVIDERS[orchestrator].label}, which isn't installed. Change it in Settings.` : undefined;
+	const blocked = orchestratorMissing ? `The orchestrator runs on ${PROVIDERS[orchestrator].label}, which isn't installed. Change it in Settings.` : undefined;
 
 	return (
 		<Frame title="polyagent · new run" hints={blocked ? [['esc', 'back']] : [['⏎', 'start'], ['esc', 'back']]}>
@@ -51,6 +51,7 @@ export function NewRun({employees, orchestrator, detections, autoRun, root, bran
 			</Text>
 			<Text wrap="truncate">
 				<Text color={theme.muted}>Team         </Text>
+				{employees.length === 0 ? <Text color={theme.muted}>nobody yet</Text> : null}
 				{employees.map((e, i) => (
 					<Text key={e.id}>
 						{i > 0 ? '  ' : ''}
@@ -59,6 +60,9 @@ export function NewRun({employees, orchestrator, detections, autoRun, root, bran
 				))}
 			</Text>
 			<Box marginTop={1} flexDirection="column">
+				{employees.length === 0 ? (
+					<Paragraph>{`You have no team yet, so ${PROVIDERS[orchestrator].label} will look at the project and propose one for this request. You review it before anyone is hired.`}</Paragraph>
+				) : null}
 				<Paragraph color={theme.muted}>
 					{`${
 						parallel

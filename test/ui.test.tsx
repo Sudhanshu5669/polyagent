@@ -7,7 +7,9 @@ import {loadContext} from '../src/core/context.js';
 import {initWorkspace} from '../src/core/workspace.js';
 import {loadEmployees} from '../src/core/employees.js';
 import {EmployeeForm} from '../src/ui/screens/EmployeeForm.js';
+import type {ProposedEmployee} from '../src/core/run/staffing.js';
 import {Settings} from '../src/ui/screens/Settings.js';
+import {TeamProposal} from '../src/ui/screens/TeamProposal.js';
 import {Setup} from '../src/ui/screens/Setup.js';
 import {fakeBin, gitInit, press, tmpDir, waitFor} from './helpers.js';
 
@@ -148,6 +150,44 @@ describe('EmployeeForm', () => {
 		await waitFor(() => onSaved.mock.calls.length > 0, ui.lastFrame);
 		const {employees: [employee]} = await loadEmployees(path.join(repo, '.polyagent'));
 		expect(employee).toMatchObject({name: 'Gem', provider: 'antigravity', model: 'gemini-flash'});
+		ui.unmount();
+	});
+});
+
+describe('TeamProposal', () => {
+	it('shows the proposed team, lets you drop people and change permissions, then hires', async () => {
+		const fake = path.join(import.meta.dirname, 'fixtures', 'fake-agent.mjs');
+		fs.chmodSync(fake, 0o755);
+		process.env.FAKE_DIR = root;
+		// The fake agent is a node script, and this file's PATH leaves node out.
+		process.env.PATH = [path.dirname(process.execPath), process.env.PATH].join(path.delimiter);
+		const person = (name: string, role: string) => ({
+			name,
+			role,
+			provider: 'claude',
+			model: null,
+			permissions: 'auto-edit',
+			owns: [`src/${role}/**`],
+			summary: `${role} work`,
+			briefing: '',
+			system_prompt: '',
+		});
+		fs.writeFileSync(path.join(root, 'decisions.json'), JSON.stringify([{note: 'A small team for this.', employees: [person('Maya', 'backend'), person('Leo', 'frontend')]}]));
+
+		const onHire = vi.fn<(employees: ProposedEmployee[]) => Promise<void>>(async () => {});
+		const ui = render(
+			<TeamProposal request="Add a health endpoint" cwd={root} orchestrator="claude" binaryFor={p => (p === 'claude' ? fake : undefined)} onHire={onHire} onBack={() => {}} />,
+		);
+		await waitFor(() => ui.lastFrame()!.includes('A small team for this.'), ui.lastFrame);
+		expect(ui.lastFrame()).toContain('works in src/frontend/**');
+		expect(ui.lastFrame()).toContain('Hiring 2 of 2');
+
+		// Drop Leo, then raise Maya to full-auto.
+		await press(ui.stdin, DOWN, ' ', UP, RIGHT);
+		await waitFor(() => ui.lastFrame()!.includes('Hiring 1 of 2') && ui.lastFrame()!.includes('full-auto'), ui.lastFrame);
+		await press(ui.stdin, ENTER);
+		await waitFor(() => onHire.mock.calls.length > 0);
+		expect(onHire.mock.calls[0]![0]).toEqual([expect.objectContaining({name: 'Maya', permissions: 'full-auto'})]);
 		ui.unmount();
 	});
 });

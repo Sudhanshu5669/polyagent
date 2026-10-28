@@ -133,6 +133,11 @@ export function updatePrompt(updates: Update[], state: RunState, employees: Empl
 
 /** Read a decision from structured output, or failing that from JSON in the final text. */
 export function parseDecision(structured: unknown, text: string | undefined): Decision | undefined {
+	return parseReply(structured, text, normalize);
+}
+
+/** Try structured output first, then the final text as JSON, a fenced block, or the outermost {…}. */
+export function parseReply<T>(structured: unknown, text: string | undefined, normalize: (value: unknown) => T | undefined): T | undefined {
 	const candidates: unknown[] = [structured];
 	if (text) {
 		candidates.push(text);
@@ -153,8 +158,8 @@ export function parseDecision(structured: unknown, text: string | undefined): De
 			}
 		}
 
-		const decision = normalize(value);
-		if (decision) return decision;
+		const result = normalize(value);
+		if (result) return result;
 	}
 
 	return undefined;

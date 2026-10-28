@@ -23,13 +23,14 @@ On first launch polyagent looks for your agent CLIs (saved paths, then `PATH`, t
 
 ### Employees
 
-Press `n` on the dashboard to hire one. Pick a starting role (frontend, backend, reviewer, tests, art, docs, or blank), name them, choose the agent CLI and permissions, and save. Each employee is a Markdown file in `.polyagent/employees/`:
+Press `n` on the dashboard to hire one, or start a run with no team and [let the orchestrator pick one](#letting-the-orchestrator-pick-the-team). Pick a starting role (frontend, backend, reviewer, tests, art, docs, or blank), name them, choose the agent CLI, model and permissions, and save. Each employee is a Markdown file in `.polyagent/employees/`:
 
 ```md
 ---
 name: Maya
 role: backend
 provider: codex
+model: gpt-6.1-sol
 permissions: auto-edit
 owns: [src/api/**, prisma/**]
 summary: Builds REST endpoints and DB schema. Never touches UI.
@@ -39,6 +40,18 @@ You are a backend engineer on this codebase...
 ```
 
 `summary` and `briefing` are for the orchestrator: what to send this employee, and how to phrase it. Edit employees in the form (`e`) or in your editor (`o`).
+
+#### Models
+
+You don't type model names. Press `⏎` on the form's **Model** field to scroll through the models the employee's CLI offers (`↑↓` to move, `⏎` to choose), or step through them with `←→` without opening the list. **CLI default** lets the CLI choose, and is what an employee without `model:` uses. **Other…** takes any name the CLI accepts. The list comes from each CLI:
+
+| CLI | Where the list comes from |
+| --- | --- |
+| Claude Code | Its aliases (`fable`, `opus`, `sonnet`, `haiku`, always the latest of each), plus any extra models Claude Code offers your account |
+| Codex | `codex debug models`, leaving out the internal models Codex's own picker hides |
+| Antigravity | `agy models` |
+
+Lists are fetched once per session, in the background while the form is open. If a CLI isn't installed or can't list its models, the picker says why and you can still choose **CLI default** or type a name. A saved model the CLI no longer lists stays selectable, marked *not listed by the CLI*. Switching an employee to a different CLI resets their model to the default, since model names belong to one CLI.
 
 | Permissions | Claude Code | Codex | Antigravity |
 | --- | --- | --- | --- |
@@ -77,6 +90,12 @@ Press `r` and describe what you want. The orchestrator (Claude Code by default) 
 - each employee works on one task at a time and keeps one session for the whole run
 - finished reports, plus the repo's current uncommitted changes, go back to the orchestrator, which can ask for revisions, add follow-up work (like a review) or finish with a summary
 - limits that hold whatever the orchestrator decides: 30 orchestrator turns, 3 revisions per task, and invalid plans are reported back instead of run
+
+#### Letting the orchestrator pick the team
+
+Start a run before hiring anyone and the orchestrator looks at the project and your request, then proposes a team: a name, role, CLI, model, permissions, work areas, summary, briefing and system prompt for each employee. It only picks CLIs you have installed and models those CLIs list, and it can ask for `read-only` or `auto-edit` but never `full-auto`.
+
+Nobody is hired until you approve. In the review, `space` keeps or drops someone, `←→` changes their permissions (including `full-auto`, if you want it), `r` asks for a different team with your feedback, and `⏎` hires everyone kept and starts the run with your request. They're saved to `.polyagent/employees/` like anyone you hire yourself, so you can edit them afterwards. Picking a team is one read-only orchestrator turn: about half a minute, and with Claude Code about $0.30 for a small project.
 
 #### How parallel work reaches your files
 
@@ -122,7 +141,9 @@ Set globally or per repo (repo wins). Change them in the interface (`s`) or with
 | `approvals` | `ask`, `block` | `ask` |
 | `runBudget` | dollars, or `none` | `none` |
 | `taskTimeout` | minutes, or `none` | `none` |
-| `orchestratorModel` | any model name the orchestrator's CLI accepts, or `default` | `default` |
+| `orchestratorModel` | any model name the orchestrator's CLI accepts, or `default`. In the interface it's picked from a list, like an [employee's model](#models) | `default` |
+
+Changing `orchestrator` resets `orchestratorModel` to `default`, whether in the interface or with `polyagent config set`, since model names belong to one CLI.
 
 polyagent manages git tracking with its own `.polyagent/.gitignore`. It never edits your project's `.gitignore`.
 

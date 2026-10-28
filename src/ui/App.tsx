@@ -8,6 +8,7 @@ import {applyDetections, detectProvider, type Detection} from '../core/detect.js
 import {deleteEmployee, loadEmployees, type BrokenEmployee, type Employee} from '../core/employees.js';
 import {PROVIDER_IDS, type ProviderId} from '../core/providers.js';
 import {listRuns, loadRun, RunEngine, type EngineOptions, type RunSummary} from '../core/run/engine.js';
+import {hireTeam} from '../core/run/staffing.js';
 import {isFinished} from '../core/run/types.js';
 
 import {AgentNamesContext, ApprovalsContext} from './approvalsContext.js';
@@ -24,13 +25,15 @@ import {Presets} from './screens/Presets.js';
 import {RunView} from './screens/RunView.js';
 import {Settings} from './screens/Settings.js';
 import {Setup} from './screens/Setup.js';
+import {TeamProposal} from './screens/TeamProposal.js';
 import {icons, theme} from './theme.js';
 
 type Screen =
 	| {name: 'setup' | 'init' | 'dashboard' | 'settings' | 'help' | 'new-run' | 'presets'}
 	| {name: 'run'; engine: RunEngine}
 	| {name: 'chat'; employee: Employee; chat: EmployeeChat}
-	| {name: 'employee-form'; employee?: Employee};
+	| {name: 'employee-form'; employee?: Employee}
+	| {name: 'team-proposal'; request: string};
 type Detections = Partial<Record<ProviderId, Detection>>;
 
 function firstScreen(ctx: AppContext): Screen {
@@ -133,11 +136,11 @@ export function App({initial, initialTeam, initialRuns, broker: injectedBroker}:
 			? broker.claudeArgs(employee.id)
 			: undefined;
 
-	const engineOptions = (): EngineOptions => ({
+	const engineOptions = (employees = team.employees): EngineOptions => ({
 		workspaceDir: ctx.workspace.dir,
 		cwd: ctx.workspace.root,
 		branch: ctx.workspace.git?.branch,
-		employees: team.employees,
+		employees,
 		orchestrator: ctx.settings.values.orchestrator,
 		orchestratorModel: ctx.settings.values.orchestratorModel ?? undefined,
 		binaryFor,
@@ -148,8 +151,9 @@ export function App({initial, initialTeam, initialRuns, broker: injectedBroker}:
 		approvalArgs: approvalArgsFor,
 	});
 
-	const startRun = (request: string) => {
-		const engine = new RunEngine(engineOptions(), request);
+	/** `employees` overrides the team for a run whose team was just hired, before state catches up. */
+	const startRun = (request: string, employees?: Employee[]) => {
+		const engine = new RunEngine(engineOptions(employees), request);
 		engine.start();
 		void engine.done.then(reloadTeam);
 		setRun(engine);
@@ -265,7 +269,25 @@ export function App({initial, initialTeam, initialRuns, broker: injectedBroker}:
 					root={ctx.workspace.root}
 					branch={ctx.workspace.git?.branch}
 					parallel={ctx.workspace.git !== undefined}
-					onStart={startRun}
+					onStart={request => (team.employees.length ? startRun(request) : setScreen({name: 'team-proposal', request}))}
+					onBack={toDashboard}
+				/>
+			);
+		case 'team-proposal':
+			return (
+				<TeamProposal
+					request={screen.request}
+					cwd={ctx.workspace.root}
+					orchestrator={ctx.settings.values.orchestrator}
+					orchestratorModel={ctx.settings.values.orchestratorModel ?? undefined}
+					binaryFor={binaryFor}
+					onHire={async employees => {
+						const ids = await hireTeam(ctx.workspace.dir, employees, [...team.employees, ...team.broken].map(e => e.id));
+						const hired = await loadEmployees(ctx.workspace.dir);
+						setTeam(hired);
+						setSelectedId(ids[0]);
+						startRun(screen.request, hired.employees);
+					}}
 					onBack={toDashboard}
 				/>
 			);
