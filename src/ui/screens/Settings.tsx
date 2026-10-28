@@ -8,6 +8,8 @@ import {
 	resolveSettings,
 	saveGlobalConfig,
 	saveRepoConfig,
+	resetModelOnOrchestratorChange,
+	DEFAULT_SETTINGS,
 	type GlobalConfig,
 	type SettingKey,
 	type Settings as SettingsValues,
@@ -19,6 +21,7 @@ import {tildify, WORKSPACE_DIRNAME} from '../../core/paths.js';
 import {PROVIDERS, PROVIDER_IDS, type ProviderId} from '../../core/providers.js';
 import {AddProviderFlow} from '../components/AddProviderFlow.js';
 import {Frame} from '../components/Frame.js';
+import {cycleModels, ModelWheel} from '../components/ModelWheel.js';
 import {Paragraph} from '../components/Paragraph.js';
 import {TextInput} from '../components/TextInput.js';
 import type {Hint} from '../components/KeyHints.js';
@@ -26,6 +29,7 @@ import {ProviderBadges, ProviderRows} from '../components/ProviderRows.js';
 import {Spinner} from '../components/Spinner.js';
 import {icons, theme} from '../theme.js';
 import {useAddProvider} from '../useAddProvider.js';
+import {useModels} from '../useModels.js';
 import {SETTINGS_META} from './settingsMeta.js';
 
 type Tab = 'repo' | 'global' | 'providers';
@@ -57,23 +61,41 @@ export function Settings({ctx, detections, onSaved, onDetections, onBack}: Props
 	const scoped = tab === 'repo' ? ctx.settings : resolveSettings(ctx.global);
 	const selectedMeta = SETTINGS_META[row]!;
 	const selectedProvider = PROVIDER_IDS[providerRow]!;
+	const orchestrator = scoped.values.orchestrator;
+	const orchestratorDetection = detections[orchestrator];
+	const models = useModels(orchestrator, orchestratorDetection?.status === 'found' ? orchestratorDetection.path : undefined);
+	const pickingModel = typing && selectedMeta.key === 'orchestratorModel';
 
 	const write = async (key: SettingKey, value: SettingsValues[SettingKey] | undefined) => {
-		const apply = <T extends {settings: Partial<SettingsValues>}>(config: T): T => {
+		let modelReset = false;
+		const apply = <T extends {settings: Partial<SettingsValues>}>(config: T, inherited: SettingsValues): T => {
 			const settings = {...config.settings};
 			if (value === undefined) delete settings[key];
 			else Object.assign(settings, {[key]: value});
-			return {...config, settings};
+			const next = resetModelOnOrchestratorChange(config.settings, settings, inherited);
+			modelReset = next !== settings && scoped.values.orchestratorModel !== null;
+			return {...config, settings: next};
 		};
 
 		// Re-read from disk so we never clobber edits made by `polyagent config set` in another terminal.
-		if (tab === 'repo') await saveRepoConfig(ctx.workspace.root, apply(await loadRepoConfig(ctx.workspace.root)));
-		else await saveGlobalConfig(apply(await loadGlobalConfig()));
+		const global = await loadGlobalConfig();
+		if (tab === 'repo') await saveRepoConfig(ctx.workspace.root, apply(await loadRepoConfig(ctx.workspace.root), resolveSettings(global).values));
+		else await saveGlobalConfig(apply(global, DEFAULT_SETTINGS));
 		await onSaved();
-		setFlash(tab === 'repo' ? `Saved to ${WORKSPACE_DIRNAME}/config.json` : 'Saved as global default');
+		const saved = tab === 'repo' ? `Saved to ${WORKSPACE_DIRNAME}/config.json` : 'Saved as global default';
+		setFlash(modelReset ? `${saved}. Orchestrator model reset to the CLI default.` : saved);
 	};
 
 	const cycle = (delta: number) => {
+		if (selectedMeta.key === 'orchestratorModel') {
+			const ids = cycleModels(models);
+			const i = ids.indexOf(scoped.values.orchestratorModel ?? '');
+			// A model the CLI doesn't list steps to the default or the last listed one.
+			const next = ids[i === -1 ? (delta > 0 ? 0 : ids.length - 1) : (i + delta + ids.length) % ids.length]!;
+			void write('orchestratorModel', next || null);
+			return;
+		}
+
 		if (selectedMeta.options.length === 0) return;
 		const current = scoped.values[selectedMeta.key];
 		const i = selectedMeta.options.indexOf(current);
@@ -134,11 +156,15 @@ export function Settings({ctx, detections, onSaved, onDetections, onBack}: Props
 	};
 
 	const hints: Hint[] =
-		add.state.step !== 'idle' || typing
-			? [['⏎', typing ? 'save' : 'confirm'], ['esc', 'back']]
-			: tab === 'providers'
-				? [['tab', 'next tab'], ['↑↓', 'move'], ['⏎', 'set path'], ['r', 're-check'], ['esc', 'back']]
-				: [['tab', 'next tab'], ['↑↓', 'move'], selectedMeta.parse ? ['⏎', 'edit'] : ['←→', 'change'], ['x', 'reset'], ['esc', 'back']];
+		pickingModel
+			? [['↑↓', 'turn'], ['⏎', 'choose'], ['esc', 'cancel']]
+			: add.state.step !== 'idle' || typing
+				? [['⏎', typing ? 'save' : 'confirm'], ['esc', 'back']]
+				: tab === 'providers'
+					? [['tab', 'next tab'], ['↑↓', 'move'], ['⏎', 'set path'], ['r', 're-check'], ['esc', 'back']]
+					: selectedMeta.key === 'orchestratorModel'
+						? [['tab', 'next tab'], ['↑↓', 'move'], ['⏎', 'pick'], ['←→', 'change'], ['x', 'reset'], ['esc', 'back']]
+						: [['tab', 'next tab'], ['↑↓', 'move'], selectedMeta.parse ? ['⏎', 'edit'] : ['←→', 'change'], ['x', 'reset'], ['esc', 'back']];
 
 	return (
 		<Frame title="polyagent · settings" right={<ProviderBadges detections={detections} />} hints={hints}>
@@ -184,8 +210,28 @@ export function Settings({ctx, detections, onSaved, onDetections, onBack}: Props
 							const selected = i === row;
 							const value = scoped.values[m.key];
 							const notInstalled = m.key === 'orchestrator' && detections[value as ProviderId]?.status === 'missing';
+							const cyclable = m.options.length > 0 || m.key === 'orchestratorModel';
 							return (
-								selected && typing ? (
+								selected && pickingModel ? (
+									<Box key={m.key} flexDirection="column">
+										<Text>
+											<Text color={theme.accent}>{icons.pointer} </Text>
+											<Text bold>{m.label}</Text>
+										</Text>
+										<Box marginLeft={2 + LABEL_WIDTH}>
+											<ModelWheel
+												list={models}
+												cli={PROVIDERS[orchestrator].label}
+												value={scoped.values.orchestratorModel ?? ''}
+												onSubmit={model => {
+													setTyping(false);
+													void write('orchestratorModel', model || null);
+												}}
+												onCancel={() => setTyping(false)}
+											/>
+										</Box>
+									</Box>
+								) : selected && typing ? (
 									<Box key={m.key}>
 										<Text color={theme.accent}>{icons.pointer} </Text>
 										<Text bold>{m.label.padEnd(LABEL_WIDTH)}</Text>
@@ -206,9 +252,9 @@ export function Settings({ctx, detections, onSaved, onDetections, onBack}: Props
 									<Text color={theme.accent}>{selected ? `${icons.pointer} ` : '  '}</Text>
 									<Text bold={selected}>{m.label.padEnd(LABEL_WIDTH)}</Text>
 									<Text color={selected ? theme.accent : undefined}>
-										{selected && m.options.length ? '‹ ' : '  '}
+										{selected && cyclable ? '‹ ' : '  '}
 										{m.format(value).padEnd(VALUE_WIDTH)}
-										{selected && m.options.length ? ' ›' : '  '}
+										{selected && cyclable ? ' ›' : '  '}
 									</Text>
 									{notInstalled ? <Text color={theme.warn}> {icons.warn} not installed</Text> : null}
 									<Text color={theme.muted}>  {sourceLabel(tab, scoped.sources[m.key])}</Text>

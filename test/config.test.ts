@@ -7,6 +7,7 @@ import {
 	formatSettingValue,
 	loadGlobalConfig,
 	parseSettingValue,
+	resetModelOnOrchestratorChange,
 	resolveSettings,
 	RepoConfigSchema,
 } from '../src/core/config.js';
@@ -75,5 +76,28 @@ describe('loadGlobalConfig', () => {
 		const home = tmpDir();
 		fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({settings: {maxParallel: -1}}));
 		await expect(loadGlobalConfig({POLYAGENT_HOME: home})).rejects.toThrow(/config\.json has invalid settings:\n\s+settings\.maxParallel/);
+	});
+});
+
+describe('resetModelOnOrchestratorChange', () => {
+	it("drops a scope's own model when the orchestrator CLI changes", () => {
+		const after = resetModelOnOrchestratorChange({orchestratorModel: 'opus'}, {orchestrator: 'codex', orchestratorModel: 'opus'}, DEFAULT_SETTINGS);
+		expect(after).toEqual({orchestrator: 'codex'});
+	});
+
+	it('overrides an inherited model with the default', () => {
+		const inherited = {...DEFAULT_SETTINGS, orchestratorModel: 'opus'};
+		expect(resetModelOnOrchestratorChange({}, {orchestrator: 'codex'}, inherited)).toEqual({orchestrator: 'codex', orchestratorModel: null});
+	});
+
+	it('keeps the model when the orchestrator stays the same', () => {
+		const before = {orchestrator: 'claude' as const, orchestratorModel: 'opus'};
+		const after = {...before, maxParallel: 2};
+		expect(resetModelOnOrchestratorChange(before, after, DEFAULT_SETTINGS)).toBe(after);
+		// Setting the orchestrator to the one already inherited isn't a change either.
+		expect(resetModelOnOrchestratorChange({orchestratorModel: 'opus'}, {orchestrator: DEFAULT_SETTINGS.orchestrator, orchestratorModel: 'opus'}, DEFAULT_SETTINGS)).toEqual({
+			orchestrator: DEFAULT_SETTINGS.orchestrator,
+			orchestratorModel: 'opus',
+		});
 	});
 });

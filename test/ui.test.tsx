@@ -5,6 +5,8 @@ import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {emptyGlobalConfig, type GlobalConfig} from '../src/core/config.js';
 import {loadContext} from '../src/core/context.js';
 import {initWorkspace} from '../src/core/workspace.js';
+import {loadEmployees} from '../src/core/employees.js';
+import {EmployeeForm} from '../src/ui/screens/EmployeeForm.js';
 import {Settings} from '../src/ui/screens/Settings.js';
 import {Setup} from '../src/ui/screens/Setup.js';
 import {fakeBin, gitInit, press, tmpDir, waitFor} from './helpers.js';
@@ -12,6 +14,7 @@ import {fakeBin, gitInit, press, tmpDir, waitFor} from './helpers.js';
 const ENTER = '\r';
 const DOWN = '\u001B[B';
 const RIGHT = '\u001B[C';
+const UP = '\u001B[A';
 
 let savedEnv: NodeJS.ProcessEnv;
 let root: string;
@@ -103,6 +106,48 @@ describe('Settings', () => {
 		await waitFor(() => ui.lastFrame()!.includes('› Parallel limit'), ui.lastFrame);
 		await press(ui.stdin, RIGHT);
 		await waitFor(() => JSON.parse(fs.readFileSync(path.join(repo, '.polyagent', 'config.json'), 'utf8')).settings.maxParallel === 1);
+		ui.unmount();
+	});
+});
+
+describe('EmployeeForm', () => {
+	it('picks a model from the list the CLI reports', async () => {
+		const repo = path.join(root, 'repo');
+		fs.mkdirSync(repo);
+		gitInit(repo);
+		await initWorkspace(repo, 'ignore-all');
+		const agy = path.join(root, 'bin', 'agy');
+		fs.mkdirSync(path.dirname(agy), {recursive: true});
+		fs.writeFileSync(agy, `#!/bin/sh\nprintf 'Fetching available models...\\ngemini-pro\\tGemini Pro\\ngemini-flash\\tGemini Flash\\n'\n`, {mode: 0o755});
+
+		const onSaved = vi.fn();
+		const ui = render(
+			<EmployeeForm
+				workspaceDir={path.join(repo, '.polyagent')}
+				takenIds={[]}
+				detections={{antigravity: {provider: 'antigravity', status: 'found', path: agy, version: '1.4.9', source: 'path'}}}
+				defaultProvider="antigravity"
+				onSaved={onSaved}
+				onBack={() => {}}
+			/>,
+		);
+		// Blank template, then a name; the cursor moves on to Role.
+		await waitFor(() => ui.lastFrame()!.includes('blank'), ui.lastFrame);
+		await press(ui.stdin, UP, ENTER);
+		await waitFor(() => ui.lastFrame()!.includes('Name'), ui.lastFrame);
+		await press(ui.stdin, 'Gem', ENTER, ENTER, 'research', ENTER);
+
+		// Role → Agent CLI → Model, then open the wheel.
+		await press(ui.stdin, DOWN, DOWN, ENTER);
+		await waitFor(() => ui.lastFrame()!.includes('Gemini Flash'), ui.lastFrame);
+		expect(ui.lastFrame()).toContain('Other…');
+		await press(ui.stdin, DOWN, DOWN, ENTER);
+		await waitFor(() => ui.lastFrame()!.includes('gemini-flash (Gemini Flash)'), ui.lastFrame);
+
+		await press(ui.stdin, '\u0013');
+		await waitFor(() => onSaved.mock.calls.length > 0, ui.lastFrame);
+		const {employees: [employee]} = await loadEmployees(path.join(repo, '.polyagent'));
+		expect(employee).toMatchObject({name: 'Gem', provider: 'antigravity', model: 'gemini-flash'});
 		ui.unmount();
 	});
 });

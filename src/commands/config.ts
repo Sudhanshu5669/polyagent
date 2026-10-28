@@ -4,10 +4,13 @@ import {
 	loadGlobalConfig,
 	loadRepoConfig,
 	parseSettingValue,
+	resetModelOnOrchestratorChange,
+	resolveSettings,
 	saveGlobalConfig,
 	saveRepoConfig,
 	DEFAULT_SETTINGS,
 	type SettingKey,
+	type Settings,
 } from '../core/config.js';
 import {loadContext} from '../core/context.js';
 import {s} from './style.js';
@@ -69,18 +72,19 @@ export async function configCommand(cwd: string, args: string[], options: {globa
 		}
 	}
 
-	if (options.global) {
-		const global = await loadGlobalConfig();
-		const settings = {...global.settings};
+	const change = (before: Partial<Settings>, inherited: Settings) => {
+		const settings = {...before};
 		if (action === 'set') Object.assign(settings, {[key]: parsed});
 		else delete settings[key];
-		await saveGlobalConfig({...global, settings});
+		return resetModelOnOrchestratorChange(before, settings, inherited);
+	};
+
+	const global = await loadGlobalConfig();
+	if (options.global) {
+		await saveGlobalConfig({...global, settings: change(global.settings, DEFAULT_SETTINGS)});
 	} else {
 		const repo = await loadRepoConfig(ctx.workspace.root);
-		const settings = {...repo.settings};
-		if (action === 'set') Object.assign(settings, {[key]: parsed});
-		else delete settings[key];
-		await saveRepoConfig(ctx.workspace.root, {...repo, settings});
+		await saveRepoConfig(ctx.workspace.root, {...repo, settings: change(repo.settings, resolveSettings(global).values)});
 	}
 
 	// Reloading also rewrites .gitignore to match the new effective mode.
@@ -89,5 +93,8 @@ export async function configCommand(cwd: string, args: string[], options: {globa
 	const now = formatSettingValue(key, after.settings.values[key]);
 	if (action === 'set') console.log(`${s.ok('✓')} ${key} = ${now} ${s.dim(`(${scope})`)}`);
 	else console.log(`${s.ok('✓')} ${key} unset for ${scope}, now ${now} ${s.dim(`(from ${after.settings.sources[key]})`)}`);
+	if (ctx.settings.values.orchestratorModel !== null && after.settings.values.orchestratorModel === null && key !== 'orchestratorModel') {
+		console.log(`${s.ok('✓')} orchestratorModel reset to default ${s.dim('(model names belong to a CLI)')}`);
+	}
 	return 0;
 }

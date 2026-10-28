@@ -83,6 +83,20 @@ export function resolveSettings(global: GlobalConfig, repo?: RepoConfig): Resolv
 	return {values, sources};
 }
 
+/**
+ * Model names belong to a CLI, so a change that switches the orchestrator CLI sends the model back to that CLI's default.
+ * `inherited` is what the scope falls back to: global settings for a repo, the built-in defaults for global.
+ */
+export function resetModelOnOrchestratorChange(before: Partial<Settings>, after: Partial<Settings>, inherited: Settings): Partial<Settings> {
+	const orchestrator = (settings: Partial<Settings>) => settings.orchestrator ?? inherited.orchestrator;
+	if (orchestrator(before) === orchestrator(after)) return after;
+	const next = {...after};
+	// Remove our own model when the fallback is already the default; otherwise override an inherited one.
+	if (inherited.orchestratorModel === null) delete next.orchestratorModel;
+	else next.orchestratorModel = null;
+	return next;
+}
+
 function stripUndefined<T extends object>(obj: T): Partial<T> {
 	return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined)) as Partial<T>;
 }

@@ -93,6 +93,6 @@ export const SETTINGS_META: SettingMeta[] = [
 		options: [],
 		parse: text => text.trim() || null,
 		format: v => v ?? 'CLI default',
-		help: () => 'The model the orchestrator uses, by any name its CLI accepts (e.g. opus, sonnet, haiku). Press ⏎ to type one; leave empty for the default.',
+		help: () => "The model the orchestrator uses. Press ⏎ to pick from the models its CLI offers, or ←→ to step through them. CLI default lets the CLI choose.",
 	}),
 ];

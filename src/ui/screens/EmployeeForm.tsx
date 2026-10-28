@@ -10,10 +10,12 @@ import {editorCommand, editText} from '../editor.js';
 import {Frame} from '../components/Frame.js';
 import type {Hint} from '../components/KeyHints.js';
 import {Menu} from '../components/Menu.js';
+import {cycleModels, ModelWheel} from '../components/ModelWheel.js';
 import {Paragraph} from '../components/Paragraph.js';
 import {RoleTag} from '../components/RoleTag.js';
 import {TextInput} from '../components/TextInput.js';
 import {icons, theme} from '../theme.js';
+import {useModels} from '../useModels.js';
 
 interface Draft {
 	name: string;
@@ -27,14 +29,14 @@ interface Draft {
 	systemPrompt: string;
 }
 
-type TextField = 'name' | 'role' | 'model' | 'owns' | 'summary' | 'briefing';
-type Field = TextField | 'provider' | 'permissions' | 'systemPrompt' | 'save';
+type TextField = 'name' | 'role' | 'owns' | 'summary' | 'briefing';
+type Field = TextField | 'provider' | 'model' | 'permissions' | 'systemPrompt' | 'save';
 
 const FIELDS: {key: Field; label: string; help: string}[] = [
 	{key: 'name', label: 'Name', help: 'What you and the orchestrator call this employee.'},
 	{key: 'role', label: 'Role', help: 'Shown as a tag, e.g. frontend, backend, reviewer, art.'},
 	{key: 'provider', label: 'Agent CLI', help: 'Which tool does the work.'},
-	{key: 'model', label: 'Model', help: "Leave empty to use the CLI's default model. Otherwise any model name the CLI accepts."},
+	{key: 'model', label: 'Model', help: ''},
 	{key: 'permissions', label: 'Permissions', help: ''},
 	{key: 'owns', label: 'Works in', help: 'Comma-separated paths or globs, e.g. src/api/**, migrations/**. Helps the orchestrator avoid overlapping work.'},
 	{key: 'summary', label: 'Summary', help: 'What this employee handles. The orchestrator assigns work based on this.'},
@@ -86,6 +88,7 @@ export function EmployeeForm({workspaceDir, employee, takenIds, detections, defa
 	const [initial, setInitial] = useState(draft);
 	const [row, setRow] = useState(0);
 	const [editing, setEditing] = useState<TextField | undefined>();
+	const [pickingModel, setPickingModel] = useState(false);
 	const [error, setError] = useState<string>();
 	const [confirmDiscard, setConfirmDiscard] = useState(false);
 
@@ -93,6 +96,9 @@ export function EmployeeForm({workspaceDir, employee, takenIds, detections, defa
 	const dirty = JSON.stringify(draft) !== JSON.stringify(initial);
 	// Still being checked counts as installed, so the warning doesn't flash on screen while detection runs.
 	const installed = (id: ProviderId) => detections[id] === undefined || detections[id].status === 'found';
+	const provider = draft?.provider ?? defaultProvider;
+	const detection = detections[provider];
+	const models = useModels(provider, detection?.status === 'found' ? detection.path : undefined);
 
 	const set = <K extends keyof Draft>(key: K, value: Draft[K]) => setDraft(d => (d ? {...d, [key]: value} : d));
 
@@ -101,6 +107,13 @@ export function EmployeeForm({workspaceDir, employee, takenIds, detections, defa
 		if (field.key === 'provider') {
 			const i = PROVIDER_IDS.indexOf(draft.provider);
 			set('provider', PROVIDER_IDS[(i + delta + PROVIDER_IDS.length) % PROVIDER_IDS.length]!);
+			// Model names belong to a CLI, so switching CLIs goes back to the default model.
+			set('model', '');
+		} else if (field.key === 'model') {
+			const ids = cycleModels(models);
+			const i = ids.indexOf(draft.model);
+			// A model the CLI doesn't list steps to the default or the last listed one.
+			set('model', ids[i === -1 ? (delta > 0 ? 0 : ids.length - 1) : (i + delta + ids.length) % ids.length]!);
 		} else if (field.key === 'permissions') {
 			const i = PERMISSION_MODES.indexOf(draft.permissions);
 			set('permissions', PERMISSION_MODES[(i + delta + PERMISSION_MODES.length) % PERMISSION_MODES.length]!);
@@ -167,10 +180,11 @@ export function EmployeeForm({workspaceDir, employee, takenIds, detections, defa
 				if (field.key === 'save') void save();
 				else if (field.key === 'systemPrompt') void editPrompt();
 				else if (field.key === 'provider' || field.key === 'permissions') cycle(1);
+				else if (field.key === 'model') setPickingModel(true);
 				else setEditing(field.key);
 			}
 		},
-		{isActive: draft !== undefined && editing === undefined},
+		{isActive: draft !== undefined && editing === undefined && !pickingModel},
 	);
 
 	// Step 1 when hiring: pick a starting template.
@@ -205,8 +219,17 @@ export function EmployeeForm({workspaceDir, employee, takenIds, detections, defa
 
 			case 'permissions':
 				return <Text color={draft.permissions === 'full-auto' ? theme.warn : undefined}>{draft.permissions}</Text>;
-			case 'model':
-				return draft.model ? <Text>{draft.model}</Text> : <Text color={theme.muted}>CLI default</Text>;
+			case 'model': {
+				if (!draft.model) return <Text color={theme.muted}>CLI default</Text>;
+				const label = models.status === 'ready' ? models.models.find(m => m.id === draft.model)?.label : undefined;
+				return (
+					<Text>
+						{draft.model}
+						{label && label !== draft.model ? <Text color={theme.muted}> ({label})</Text> : null}
+					</Text>
+				);
+			}
+
 			case 'systemPrompt': {
 				const lines = draft.systemPrompt.split('\n').filter(l => l.trim());
 				return lines.length ? (
@@ -226,18 +249,25 @@ export function EmployeeForm({workspaceDir, employee, takenIds, detections, defa
 		}
 	};
 
+	const cli = PROVIDERS[draft.provider].label;
 	const help =
 		field.key === 'permissions'
 			? PERMISSION_HELP[draft.permissions]
 			: field.key === 'systemPrompt'
 				? `Press ⏎ to edit in ${editorCommand()}. polyagent also tells the employee their name, role, summary and areas.`
-				: field.help;
+				: field.key === 'model'
+					? pickingModel
+						? ''
+						: `Press ⏎ to pick from the models ${cli} offers, or ←→ to step through them. CLI default lets ${cli} choose.`
+					: field.help;
 
-	const hints: Hint[] = editing
-		? [['⏎', 'done'], ['esc', 'cancel edit']]
-		: confirmDiscard
-			? [['y', 'discard'], ['any key', 'keep editing']]
-			: [['↑↓', 'move'], ['⏎', 'edit'], ['←→', 'change'], ['ctrl+s', 'save'], ['esc', 'back']];
+	const hints: Hint[] = pickingModel
+		? [['↑↓', 'turn'], ['⏎', 'choose'], ['esc', 'cancel']]
+		: editing
+			? [['⏎', 'done'], ['esc', 'cancel edit']]
+			: confirmDiscard
+				? [['y', 'discard'], ['any key', 'keep editing']]
+				: [['↑↓', 'move'], ['⏎', 'edit'], ['←→', 'change'], ['ctrl+s', 'save'], ['esc', 'back']];
 
 	return (
 		<Frame
@@ -267,7 +297,32 @@ export function EmployeeForm({workspaceDir, employee, takenIds, detections, defa
 					);
 				}
 
-				const cyclable = f.key === 'provider' || f.key === 'permissions';
+				const cyclable = f.key === 'provider' || f.key === 'permissions' || f.key === 'model';
+				if (f.key === 'model' && pickingModel) {
+					return (
+						<Box key={f.key} flexDirection="column">
+							<Box>
+								<Box width={2} flexShrink={0}>
+									<Text color={theme.accent}>{icons.pointer}</Text>
+								</Box>
+								<Text bold>{f.label}</Text>
+							</Box>
+							<Box marginLeft={2 + LABEL_WIDTH}>
+								<ModelWheel
+									list={models}
+									cli={cli}
+									value={draft.model}
+									onSubmit={model => {
+										set('model', model);
+										setPickingModel(false);
+									}}
+									onCancel={() => setPickingModel(false)}
+								/>
+							</Box>
+						</Box>
+					);
+				}
+
 				return (
 					<Box key={f.key}>
 						{/* Fixed-width columns so long values truncate instead of squeezing the labels. */}
