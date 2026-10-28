@@ -130,36 +130,74 @@ describe('codex adapter', () => {
 	});
 });
 
-describe('antigravity adapter (tolerant: schema undocumented)', () => {
-	it('builds print-mode args', () => {
-		expect(antigravityAdapter.args({...input, permissions: 'full-auto', sessionId: 'conv-1'})).toEqual([
+describe('antigravity adapter (fixtures recorded from agy 1.4.9)', () => {
+	it('builds print-mode args with no time limit of its own', () => {
+		expect(antigravityAdapter.args({...input, permissions: 'full-auto', model: 'gemini-pro', sessionId: 'conv-1'})).toEqual([
 			'-p',
 			'hi',
 			'--output-format',
 			'stream-json',
+			'--print-timeout',
+			'0',
 			'--dangerously-skip-permissions',
+			'--model',
+			'gemini-pro',
 			'--conversation',
 			'conv-1',
 		]);
+		expect(antigravityAdapter.args(input)).not.toContain('--mode');
+		expect(antigravityAdapter.args({...input, permissions: 'auto-edit'})).toEqual(expect.arrayContaining(['--mode', 'accept-edits']));
 	});
 
-	it('finds the session id, merges text deltas and reads the result status', () => {
-		const events = parseAll(antigravityAdapter, [
-			JSON.stringify({type: 'init', conversation_id: 'conv-9'}),
-			JSON.stringify({type: 'step_update', delta: 'Hel'}),
-			JSON.stringify({type: 'step_update', delta: 'lo'}),
-			JSON.stringify({type: 'step_update', toolinfo: {id: 't1', name: 'write_file', path: 'a.txt', status: 'done'}}),
-			JSON.stringify({type: 'result', status: 'ERROR', error: 'quota exceeded'}),
-			'plain text line',
+	it('streams text deltas into one block and reads the final response and usage', () => {
+		const events = parseAll(antigravityAdapter, fixture('agy-text.jsonl'));
+		expect(events[0]).toEqual({type: 'session', sessionId: 'acd0cd52-5b07-4a13-bd47-48e3ff990409'});
+		const texts = events.filter(e => e.type === 'text');
+		expect(texts[0]).toMatchObject({delta: false});
+		expect(texts.slice(1).every(e => e.type === 'text' && e.delta)).toBe(true);
+		expect(texts.map(e => (e.type === 'text' ? e.text : '')).join('')).toContain('ancient mystery.');
+		expect(events).toContainEqual({type: 'usage', inputTokens: 8489, outputTokens: 128});
+		expect(events.at(-1)).toMatchObject({type: 'result', ok: true, text: expect.stringMatching(/^The endless blue waves.*mystery\.$/)});
+	});
+
+	it("counts only this turn's usage when resuming, not the conversation's total", () => {
+		const events = parseAll(antigravityAdapter, fixture('agy-resume.jsonl'));
+		expect(events).toContainEqual({type: 'usage', inputTokens: 8833, outputTokens: 81});
+		expect(events.at(-1)).toEqual({type: 'result', ok: true, text: 'The'});
+	});
+
+	it('returns structured output', () => {
+		expect(parseAll(antigravityAdapter, fixture('agy-schema.jsonl')).at(-1)).toMatchObject({type: 'result', ok: true, structured: {answer: 'Four'}});
+	});
+
+	it('shows tools with relative paths and marks a denied command, explaining the early stop', () => {
+		const events = parseAll(antigravityAdapter, fixture('agy-edit-command-denied.jsonl'));
+		const tools = events.filter(e => e.type === 'tool');
+		expect(tools).toContainEqual({type: 'tool', id: 'agy-step-2', name: 'write', summary: 'notes.txt', status: 'running'});
+		expect(tools).toContainEqual({type: 'tool', id: 'agy-step-2', name: 'write', summary: 'notes.txt', status: 'done'});
+		expect(tools.at(-1)).toEqual({type: 'tool', id: 'agy-step-4', name: 'shell', summary: 'echo shell-ran', status: 'denied', output: 'Needs approval, so it was blocked.'});
+		expect(events).toContainEqual({type: 'usage', inputTokens: 17503, outputTokens: 419});
+		expect(events.at(-1)).toEqual({type: 'result', ok: true, text: "Antigravity stopped early: it needed approval for RunCommand, which it can't ask for when run by polyagent."});
+	});
+
+	it('trusts denied_actions over a write the stream reported as done', () => {
+		const events = parseAll(antigravityAdapter, fixture('agy-write-denied.jsonl'));
+		const writes = events.filter(e => e.type === 'tool' && e.id === 'agy-step-2');
+		expect(writes.at(-1)).toMatchObject({status: 'denied'});
+		expect(events.at(-1)).toMatchObject({type: 'result', ok: true, text: expect.stringContaining('WriteFile')});
+	});
+
+	it('reports failed runs and failed tools, and shows stray lines as text', () => {
+		const parse = antigravityAdapter.createParser('/repo');
+		const tool = (state: string, info: object) => JSON.stringify({event: 'step_update', step_update: {conversation_id: 'c', step_index: 3, state, step_type: 'tool', tool_name: 'read_file', tool_info: info}});
+		expect(parse(tool('ERROR', {name: 'read_file', parameters: {Path: '/repo/src'}, error: {type: 'TOOL_ERROR', message: 'path is a directory, not a file'}}))).toEqual([
+			{type: 'session', sessionId: 'c'},
+			{type: 'tool', id: 'agy-step-3', name: 'read', summary: 'src', status: 'failed', output: 'path is a directory, not a file'},
 		]);
-		expect(events[0]).toEqual({type: 'session', sessionId: 'conv-9'});
-		expect(events.filter(e => e.type === 'text')).toEqual([
-			{type: 'text', text: 'Hel', delta: true},
-			{type: 'text', text: 'lo', delta: true},
-			{type: 'text', text: 'plain text line'},
+		expect(parse(JSON.stringify({event: 'result', result: {conversation_id: 'c', status: 'ERROR', response: '', error: 'quota exceeded'}}))).toEqual([
+			{type: 'error', message: 'quota exceeded'},
+			{type: 'result', ok: false},
 		]);
-		expect(events).toContainEqual(expect.objectContaining({type: 'tool', name: 'write_file', summary: 'a.txt', status: 'done'}));
-		expect(events).toContainEqual({type: 'error', message: 'quota exceeded'});
-		expect(events).toContainEqual({type: 'result', ok: false, text: undefined});
+		expect(parse('plain text line')).toEqual([{type: 'text', text: 'plain text line'}]);
 	});
 });

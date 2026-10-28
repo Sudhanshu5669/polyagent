@@ -10,7 +10,7 @@ Run Claude Code, Codex and Antigravity as one team from your terminal: an orches
 npm install -g polyagent
 ```
 
-Requires Node 22+ and at least one agent CLI: [Claude Code](https://docs.claude.com/en/docs/claude-code) (`claude`), [Codex](https://github.com/openai/codex) (`codex`) or [Antigravity](https://antigravity.google) (`agy`). polyagent uses each CLI's own login and never touches its credentials.
+Requires Node 22+ and at least one agent CLI: [Claude Code](https://docs.claude.com/en/docs/claude-code) (`claude`), [Codex](https://github.com/openai/codex) (`codex`) or the [Antigravity CLI](https://antigravity.google/docs/getting-started?tab=cli) (`agy`, a separate install from the Antigravity editor; run `agy` once to sign in). polyagent uses each CLI's own login and never touches its credentials.
 
 ## Use
 
@@ -42,7 +42,7 @@ You are a backend engineer on this codebase...
 
 | Permissions | Claude Code | Codex | Antigravity |
 | --- | --- | --- | --- |
-| `read-only` | default mode, nothing approved | `--sandbox read-only` | no extra flags |
+| `read-only` | default mode, nothing approved | `--sandbox read-only` | default mode (no writes or commands) |
 | `auto-edit` | `acceptEdits` | `--sandbox workspace-write` | `--mode accept-edits` |
 | `full-auto` | `bypassPermissions` | `--sandbox danger-full-access` | `--dangerously-skip-permissions` |
 
@@ -54,7 +54,7 @@ Press `⏎` on an employee to chat with them directly. Their session is resumed 
 
 With **Approvals: Ask me** (the default), a Claude Code employee that wants to do something needing approval, like running a command, waits for you instead of being blocked. A ⚑ banner appears on every screen (with a terminal bell); `ctrl+a` opens the request, where you can allow once, always allow that command for that employee until polyagent quits (shell commands are matched on their first two words, e.g. `npm test`), deny, or deny with a reason the employee will read. Read-only employees never get edit tools, so approvals can't turn them into editors. Codex and Antigravity follow their own sandboxes instead. Set **Approvals: Block** to have anything that needs approval blocked automatically.
 
-Claude Code and Codex are verified against real installs (Claude Code 2.1.311, codex-cli 0.164.0). Antigravity support is marked experimental: its output format isn't publicly documented, so it hasn't been confirmed yet.
+All three are verified against real installs (Claude Code 2.1.311, codex-cli 0.164.0, agy 1.4.9). Antigravity ends its turn at the first action it needs approval for, such as a shell command in `read-only` or `auto-edit`, so that employee's report says what was blocked and the orchestrator can decide what to do next.
 
 ### Presets
 

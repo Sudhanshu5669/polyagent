@@ -39,10 +39,11 @@ export const PROVIDERS: Record<ProviderId, ProviderDef> = {
 		id: 'antigravity',
 		label: 'Antigravity',
 		bins: ['agy'],
-		install: [],
-		docsUrl: 'https://antigravity.google',
+		// The installer puts agy in ~/.local/bin, one of the shared known locations. The editor app doesn't include it.
+		install: ['curl -fsSL https://antigravity.google/cli/install.sh | bash'],
+		docsUrl: 'https://antigravity.google/docs/getting-started?tab=cli',
 		versionPattern: /antigravity|\bagy\b/i,
-		extraDirs: home => [path.join(home, '.antigravity', 'bin')],
+		extraDirs: () => [],
 	},
 };
 
