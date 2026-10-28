@@ -1,4 +1,5 @@
 import {
+	formatSettingValue,
 	isSettingKey,
 	loadGlobalConfig,
 	loadRepoConfig,
@@ -6,6 +7,7 @@ import {
 	saveGlobalConfig,
 	saveRepoConfig,
 	DEFAULT_SETTINGS,
+	type SettingKey,
 } from '../core/config.js';
 import {loadContext} from '../core/context.js';
 import {s} from './style.js';
@@ -25,7 +27,7 @@ export async function configCommand(cwd: string, args: string[], options: {globa
 
 		for (const [k, v] of Object.entries(ctx.settings.values)) {
 			const source = ctx.settings.sources[k as keyof typeof ctx.settings.values];
-			console.log(`${k.padEnd(13)} ${String(v ?? 'unlimited').padEnd(12)} ${s.dim(source)}`);
+			console.log(`${k.padEnd(17)} ${formatSettingValue(k as SettingKey, v).padEnd(12)} ${s.dim(source)}`);
 		}
 
 		return 0;
@@ -38,7 +40,7 @@ export async function configCommand(cwd: string, args: string[], options: {globa
 
 	if (action === 'get') {
 		const v = ctx.settings.values[key];
-		console.log(options.json ? JSON.stringify(v) : String(v ?? 'unlimited'));
+		console.log(options.json ? JSON.stringify(v) : formatSettingValue(key, v));
 		return 0;
 	}
 
@@ -84,7 +86,7 @@ export async function configCommand(cwd: string, args: string[], options: {globa
 	// Reloading also rewrites .gitignore to match the new effective mode.
 	const after = await loadContext(cwd);
 	const scope = options.global ? 'global default' : 'this repo';
-	const now = String(after.settings.values[key] ?? 'unlimited');
+	const now = formatSettingValue(key, after.settings.values[key]);
 	if (action === 'set') console.log(`${s.ok('✓')} ${key} = ${now} ${s.dim(`(${scope})`)}`);
 	else console.log(`${s.ok('✓')} ${key} unset for ${scope}, now ${now} ${s.dim(`(from ${after.settings.sources[key]})`)}`);
 	return 0;

@@ -72,17 +72,3 @@ export async function initWorkspace(workspaceRoot: string, mode: GitTracking): P
 		await saveRepoConfig(workspaceRoot, config);
 	}
 }
-
-/** Names of employee and preset files, without extensions. Full parsing arrives with the employee format. */
-export async function listWorkspaceItems(workspaceDir: string): Promise<{employees: string[]; presets: string[]}> {
-	const names = async (sub: string, ext: RegExp) => {
-		try {
-			const files = await fs.readdir(path.join(workspaceDir, sub));
-			return files.filter(f => ext.test(f)).map(f => f.replace(ext, '')).sort();
-		} catch {
-			return [];
-		}
-	};
-
-	return {employees: await names('employees', /\.md$/), presets: await names('presets', /\.ya?ml$/)};
-}

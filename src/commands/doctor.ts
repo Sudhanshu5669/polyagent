@@ -1,3 +1,4 @@
+import {formatSettingValue, type SettingKey} from '../core/config.js';
 import {loadContext} from '../core/context.js';
 import {detectAll, type Detection} from '../core/detect.js';
 import {globalConfigPath, tildify} from '../core/paths.js';
@@ -51,7 +52,7 @@ export async function doctor(cwd: string, json: boolean): Promise<number> {
 	out.push('', s.bold('Settings'));
 	for (const [key, value] of Object.entries(ctx.settings.values)) {
 		const source = ctx.settings.sources[key as keyof typeof ctx.settings.values];
-		out.push(`  ${key.padEnd(13)} ${String(value ?? 'unlimited').padEnd(12)} ${s.dim(source)}`);
+		out.push(`  ${key.padEnd(17)} ${formatSettingValue(key as SettingKey, value).padEnd(12)} ${s.dim(source)}`);
 	}
 
 	out.push('', s.dim(`Global config: ${tildify(globalConfigPath())}`));

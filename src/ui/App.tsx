@@ -9,7 +9,7 @@ import {deleteEmployee, loadEmployees, type BrokenEmployee, type Employee} from 
 import {PROVIDER_IDS, type ProviderId} from '../core/providers.js';
 import {listRuns, loadRun, RunEngine, type EngineOptions, type RunSummary} from '../core/run/engine.js';
 import {isFinished} from '../core/run/types.js';
-import {listWorkspaceItems} from '../core/workspace.js';
+
 import {AgentNamesContext, ApprovalsContext} from './approvalsContext.js';
 import {openInEditor} from './editor.js';
 import {InputGate} from './input.js';
@@ -20,13 +20,14 @@ import {EmployeeForm} from './screens/EmployeeForm.js';
 import {Help} from './screens/Help.js';
 import {InitWorkspace} from './screens/InitWorkspace.js';
 import {NewRun} from './screens/NewRun.js';
+import {Presets} from './screens/Presets.js';
 import {RunView} from './screens/RunView.js';
 import {Settings} from './screens/Settings.js';
 import {Setup} from './screens/Setup.js';
 import {icons, theme} from './theme.js';
 
 type Screen =
-	| {name: 'setup' | 'init' | 'dashboard' | 'settings' | 'help' | 'new-run'}
+	| {name: 'setup' | 'init' | 'dashboard' | 'settings' | 'help' | 'new-run' | 'presets'}
 	| {name: 'run'; engine: RunEngine}
 	| {name: 'chat'; employee: Employee; chat: EmployeeChat}
 	| {name: 'employee-form'; employee?: Employee};
@@ -52,7 +53,7 @@ export function App({initial, initialTeam, initialRuns, broker: injectedBroker}:
 	const [screen, setScreen] = useState<Screen>(() => firstScreen(initial));
 	const [detections, setDetections] = useState<Detections>({});
 	const [team, setTeam] = useState<{employees: Employee[]; broken: BrokenEmployee[]}>(initialTeam ?? {employees: [], broken: []});
-	const [presets, setPresets] = useState<string[]>([]);
+
 	const [selectedId, setSelectedId] = useState<string>();
 	const [notice, setNotice] = useState<string>();
 	const [run, setRun] = useState<RunEngine>();
@@ -82,9 +83,7 @@ export function App({initial, initialTeam, initialRuns, broker: injectedBroker}:
 
 	const reloadTeam = useCallback(async () => {
 		if (!ctx.workspace.exists) return;
-		const [loaded, items] = await Promise.all([loadEmployees(ctx.workspace.dir), listWorkspaceItems(ctx.workspace.dir)]);
-		setTeam(loaded);
-		setPresets(items.presets);
+		setTeam(await loadEmployees(ctx.workspace.dir));
 		setRuns(await listRuns(ctx.workspace.dir, 5));
 	}, [ctx.workspace.exists, ctx.workspace.dir]);
 
@@ -238,6 +237,24 @@ export function App({initial, initialTeam, initialRuns, broker: injectedBroker}:
 			);
 		case 'help':
 			return <Help onBack={toDashboard} />;
+		case 'presets':
+			return (
+				<Presets
+					workspaceDir={ctx.workspace.dir}
+					team={team.employees}
+					detections={detections}
+					defaultProvider={defaultProvider()}
+					onApplied={(preset, result) => {
+						const parts = [`Added ${result.added.length ? result.added.join(', ') : 'nobody new'} from ${preset.name}`];
+						if (result.renamed.length) parts.push(`renamed ${result.renamed.map(([from, to]) => `${from} → ${to}`).join(', ')}`);
+						if (result.switched.length) parts.push(`moved ${result.switched.join(', ')} to an installed CLI`);
+						setNotice(parts.join('; '));
+						setSelectedId(result.added[0]);
+						void reloadTeam().then(toDashboard);
+					}}
+					onBack={toDashboard}
+				/>
+			);
 		case 'new-run':
 			return (
 				<NewRun
@@ -287,7 +304,7 @@ export function App({initial, initialTeam, initialRuns, broker: injectedBroker}:
 					detections={detections}
 					employees={team.employees}
 					broken={team.broken}
-					presets={presets}
+
 					hub={hub}
 					run={run}
 					runs={runs}
@@ -311,6 +328,7 @@ export function App({initial, initialTeam, initialRuns, broker: injectedBroker}:
 					}}
 					onOpenSettings={() => setScreen({name: 'settings'})}
 					onOpenHelp={() => setScreen({name: 'help'})}
+					onOpenPresets={() => setScreen({name: 'presets'})}
 					notice={
 						notice ? (
 							<Text color={theme.warn}>

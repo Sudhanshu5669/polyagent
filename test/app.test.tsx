@@ -175,6 +175,34 @@ describe('App', () => {
 		ui.unmount();
 	});
 
+	it('starts a team from a built-in preset and saves it as a global preset', async () => {
+		const repo = path.join(root, 'repo');
+		fs.mkdirSync(repo);
+		await initWorkspace(repo, 'ignore-all');
+		await saveGlobalConfig({version: 1, providers: {claude: {path: path.join(root, 'bin', 'claude'), source: 'path'}}, settings: {}});
+		const ui = render(<App initial={await loadContext(repo)} />);
+		const frame = () => ui.lastFrame() ?? '';
+		await waitFor(() => frame().includes('start from a ready-made team') && frame().includes('claude ✓'), frame);
+
+		await press(ui.stdin, 'p');
+		await waitFor(() => frame().includes('BUILT-IN') && frame().includes('Builder + reviewer'), frame);
+		await press(ui.stdin, '\u001B[B', ENTER);
+		await waitFor(() => frame().includes('Full-stack squad') && frame().includes('Add to your team'), frame);
+		await press(ui.stdin, ENTER);
+		await waitFor(() => frame().includes('Added leo, maya, tess, rex from Full-stack squad') && frame().includes('Tess [tests]'), frame);
+
+		await press(ui.stdin, 'p');
+		await waitFor(() => frame().includes('save current team'), frame);
+		await press(ui.stdin, 's');
+		await waitFor(() => frame().includes('Save your team (4) as a preset'), frame);
+		await press(ui.stdin, 'Web squad', ENTER, ENTER);
+		await waitFor(() => frame().includes('Every repo'), frame);
+		await press(ui.stdin, '\u001B[B', ENTER);
+		await waitFor(() => frame().includes('Saved your team as "Web squad" (every repo)'), frame);
+		expect(fs.existsSync(path.join(process.env.POLYAGENT_HOME!, 'presets', 'web-squad', 'employees', 'tess.md'))).toBe(true);
+		ui.unmount();
+	});
+
 	it('ctrl+c stops a running employee instead of quitting', async () => {
 		fs.writeFileSync(path.join(root, 'bin', 'claude'), '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "2.1.0 (Claude Code)"; exit 0; fi\nsleep 60\n', {mode: 0o755});
 		const repo = path.join(root, 'repo');

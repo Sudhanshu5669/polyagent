@@ -22,6 +22,7 @@ const LEFT: Section[] = [
 		[
 			['r', 'new run / open run'],
 			['n', 'hire an employee'],
+			['p', 'team presets'],
 			['⏎', 'chat / open past run'],
 			['e  o  d', 'edit, open file, remove'],
 			['s', 'settings'],

@@ -4,6 +4,7 @@ import {describe, expect, it} from 'vitest';
 import {
 	DEFAULT_SETTINGS,
 	emptyGlobalConfig,
+	formatSettingValue,
 	loadGlobalConfig,
 	parseSettingValue,
 	resolveSettings,
@@ -50,6 +51,12 @@ describe('parseSettingValue', () => {
 		expect(parseSettingValue('orchestratorModel', 'opus')).toBe('opus');
 		expect(parseSettingValue('orchestratorModel', 'default')).toBeNull();
 		expect(() => parseSettingValue('runBudget', '-1')).toThrow();
+	});
+
+	it('shows an unset model as the default and an unset limit as unlimited', () => {
+		expect(formatSettingValue('orchestratorModel', null)).toBe('default');
+		expect(formatSettingValue('runBudget', null)).toBe('unlimited');
+		expect(formatSettingValue('maxParallel', 4)).toBe('4');
 	});
 
 	it('rejects bad values', () => {

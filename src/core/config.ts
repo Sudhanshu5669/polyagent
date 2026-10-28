@@ -158,6 +158,12 @@ export function parseSettingValue(key: SettingKey, input: string): Settings[Sett
 	}
 }
 
+/** How a setting reads in `doctor` and `config`: null means "no limit" for limits, but the CLI's own default for the model. */
+export function formatSettingValue(key: SettingKey, value: Settings[SettingKey]): string {
+	if (value !== null) return String(value);
+	return key === 'orchestratorModel' ? 'default' : 'unlimited';
+}
+
 export function isSettingKey(key: string): key is SettingKey {
 	return key in DEFAULT_SETTINGS;
 }

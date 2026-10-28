@@ -7,6 +7,7 @@ import {killAllTurns} from './core/agents/runner.js';
 import {loadEmployees} from './core/employees.js';
 import {listRuns} from './core/run/engine.js';
 import {doctor} from './commands/doctor.js';
+import {presetsCommand} from './commands/presets.js';
 import {s} from './commands/style.js';
 import {loadContext} from './core/context.js';
 import {tildify} from './core/paths.js';
@@ -23,15 +24,23 @@ ${s.bold('Usage')}
   polyagent config get <key>
   polyagent config set <key> <value> [--global]
   polyagent config unset <key> [--global]
+  polyagent presets              list team presets (this repo, global, built-in)
+  polyagent presets apply <name> [--replace]
+  polyagent presets save <name> [--global]
 
 ${s.bold('Settings')}
   gitTracking    ignore-all | share-team | track-all
   orchestrator   claude | codex | antigravity
   autoRun        on | off
   maxParallel    a number, or unlimited
+  approvals      ask | block
+  runBudget      dollars, or none
+  taskTimeout    minutes, or none
+  orchestratorModel  a model name, or default
 
 ${s.bold('Options')}
-  --global       change the default for every repo instead of this one
+  --global       change the default for every repo, or save a preset for every repo
+  --replace      apply a preset in place of the current team
   --json         machine-readable output (doctor, config)
   -h, --help     show this help
   -v, --version  show the version
@@ -53,6 +62,7 @@ async function main(): Promise<number> {
 				version: {type: 'boolean', short: 'v'},
 				json: {type: 'boolean'},
 				global: {type: 'boolean'},
+				replace: {type: 'boolean'},
 			},
 		});
 	} catch (error) {
@@ -81,6 +91,8 @@ async function main(): Promise<number> {
 			return doctor(cwd, Boolean(values.json));
 		case 'config':
 			return configCommand(cwd, rest, {global: Boolean(values.global), json: Boolean(values.json)});
+		case 'presets':
+			return presetsCommand(cwd, rest, {global: Boolean(values.global), replace: Boolean(values.replace), json: Boolean(values.json)});
 		case 'init': {
 			const ctx = await loadContext(cwd);
 			if (ctx.workspace.exists) {

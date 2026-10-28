@@ -24,7 +24,6 @@ interface Props {
 	detections: Partial<Record<ProviderId, Detection>>;
 	employees: Employee[];
 	broken: BrokenEmployee[];
-	presets: string[];
 	hub: ChatHub;
 	/** The run started in this session, if any. */
 	run?: RunEngine;
@@ -40,13 +39,14 @@ interface Props {
 	onDelete: (id: string) => void;
 	onOpenSettings: () => void;
 	onOpenHelp: () => void;
+	onOpenPresets: () => void;
 	notice?: ReactNode;
 }
 
 const LIST_WIDTH = 32;
 
 export function Dashboard(props: Props) {
-	const {ctx, detections, employees, broken, presets, hub, run, runs, selectedId} = props;
+	const {ctx, detections, employees, broken, hub, run, runs, selectedId} = props;
 	const {exit} = useApp();
 	useSyncExternalStore(hub.subscribe, () => hub.version);
 	useSyncExternalStore(run?.subscribe ?? noopSubscribe, () => run?.version ?? 0);
@@ -95,6 +95,7 @@ export function Dashboard(props: Props) {
 		else if (input === 'o' && selected) props.onOpenFile(selected.file);
 		else if (input === 'd' && selected) setConfirm('delete');
 		else if (input === 's') props.onOpenSettings();
+		else if (input === 'p') props.onOpenPresets();
 		else if (input === '?') props.onOpenHelp();
 		else if (input === 'q') {
 			if (hub.workingCount() > 0 || runActive) setConfirm('quit');
@@ -111,10 +112,10 @@ export function Dashboard(props: Props) {
 	const hints: Hint[] = confirm
 		? [['y', confirm === 'delete' ? 'remove' : 'stop them and quit'], ['any key', 'cancel']]
 		: items.length === 0
-			? [['n', 'hire'], ...(runRows.length ? ([['↑↓', 'select'], ['⏎', 'open run']] as Hint[]) : []), ['s', 'settings'], ['?', 'help'], ['q', 'quit']]
+			? [['p', 'presets'], ['n', 'hire'], ...(runRows.length ? ([['↑↓', 'select'], ['⏎', 'open run']] as Hint[]) : []), ['s', 'settings'], ['?', 'help'], ['q', 'quit']]
 			: selectedRun
-				? [['r', runActive ? 'open live run' : 'new run'], ['↑↓', 'select'], ['⏎', 'open run'], ['n', 'hire'], ['s', 'settings'], ['?', 'help'], ['q', 'quit']]
-				: [['r', runActive ? 'open run' : 'new run'], ['↑↓', 'select'], ['⏎', 'chat'], ['n', 'hire'], ['e', 'edit'], ['o', 'open'], ['d', 'remove'], ['s', 'settings'], ['?', 'help'], ['q', 'quit']];
+				? [['r', runActive ? 'open live run' : 'new run'], ['↑↓', 'select'], ['⏎', 'open run'], ['n', 'hire'], ['p', 'presets'], ['s', 'settings'], ['?', 'help'], ['q', 'quit']]
+				: [['r', runActive ? 'open run' : 'new run'], ['↑↓', 'select'], ['⏎', 'chat'], ['n', 'hire'], ['e', 'edit'], ['o', 'open'], ['d', 'remove'], ['p', 'presets'], ['s', 'settings'], ['?', 'help'], ['q', 'quit']];
 
 	const working = hub.workingCount();
 	const notice = confirm ? (
@@ -176,19 +177,7 @@ export function Dashboard(props: Props) {
 							);
 						})}
 					</Box>
-					{presets.length > 0 ? (
-						<Box marginTop={1} flexDirection="column">
-							<Text bold color={theme.muted}>
-								PRESETS
-							</Text>
-							{presets.map(p => (
-								<Text key={p} wrap="truncate">
-									{'  '}
-									{icons.dot} {p}
-								</Text>
-							))}
-						</Box>
-					) : null}
+
 				</Box>
 
 				<Box flexDirection="column" flexGrow={1} flexBasis={0}>
@@ -299,7 +288,7 @@ function EmptyState({orchestrator}: {orchestrator: string}) {
 				<Paragraph>{`Then press r and describe what you want: the orchestrator (${orchestrator}) plans the work and hands it to the right employees.`}</Paragraph>
 			</Box>
 			<Text>
-				Press <Text bold color={theme.accent}>n</Text> to hire your first employee.
+				Press <Text bold color={theme.accent}>p</Text> to start from a ready-made team, or <Text bold color={theme.accent}>n</Text> to hire your first employee.
 			</Text>
 		</Box>
 	);
