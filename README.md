@@ -56,6 +56,18 @@ With **Approvals: Ask me** (the default), a Claude Code employee that wants to d
 
 Claude Code and Codex are verified against real installs (Claude Code 2.1.311, codex-cli 0.164.0). Antigravity support is marked experimental: its output format isn't publicly documented, so it hasn't been confirmed yet.
 
+### Presets
+
+A preset is a saved team. Press `p` on the dashboard to browse them, see who's in each, apply one or save your current team.
+
+- **This repo** presets live in `.polyagent/presets/`, so `share-team` commits them along with the team.
+- **Global** presets live in `~/.config/polyagent/presets/` and show up in every repo.
+- **Built-in** presets are three starter teams: *Builder + reviewer*, *Full-stack squad* and *Product squad*. They use your orchestrator's CLI, or another installed one if that isn't.
+
+Applying a preset either adds its employees to your team or replaces the team. When adding, an employee who's already on the team with the same definition is skipped, and one who clashes with a different definition joins under a new name (`maya-2`, "Maya 2"). Employees on a CLI you don't have installed are moved to one you do, with their model reset to that CLI's default.
+
+Each preset is a folder holding a `preset.yaml` (name and description) and an `employees/` folder in the same Markdown format as your team, so you can edit presets by hand. Names are unique within a place, so `polyagent presets apply <name>` always means one preset; if the repo and global folders both have one by that name, the repo one wins.
+
 ### Runs
 
 Press `r` and describe what you want. The orchestrator (Claude Code by default) looks at the repo, splits the request into tasks, and hands each one to the employee whose summary fits, written in the style their briefing asks for. polyagent itself does the scheduling:
@@ -93,6 +105,9 @@ The run screen lists the orchestrator and every employee with their role, status
 | `polyagent config [--json]` | Show effective settings and where each comes from |
 | `polyagent config set <key> <value> [--global]` | Change a setting for this repo, or the global default |
 | `polyagent config unset <key> [--global]` | Go back to the inherited value |
+| `polyagent presets [list] [--json]` | List presets: this repo's, then global, then built-in |
+| `polyagent presets apply <name> [--replace]` | Add a preset's employees to the team, or replace the team with them |
+| `polyagent presets save <name> [--global]` | Save the current team as a preset for this repo, or for every repo |
 
 ## Settings
 
@@ -115,6 +130,7 @@ polyagent manages git tracking with its own `.polyagent/.gitignore`. It never ed
 
 ```
 ~/.config/polyagent/config.json     agent CLI paths + global defaults ($POLYAGENT_HOME overrides)
+~/.config/polyagent/presets/        global team presets
 <project>/.polyagent/
   .gitignore                        managed by polyagent from gitTracking
   config.json                       this repo's settings
