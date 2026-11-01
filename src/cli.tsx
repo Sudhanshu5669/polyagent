@@ -13,6 +13,7 @@ import {loadContext} from './core/context.js';
 import {tildify} from './core/paths.js';
 import {initWorkspace} from './core/workspace.js';
 import {App} from './ui/App.js';
+import {applyTerminalTheme} from './ui/terminalTheme.js';
 
 const HELP = `${s.bold('polyagent')} — run Claude Code, Codex and Antigravity as one team
 
@@ -118,6 +119,8 @@ async function launchTui(cwd: string): Promise<number> {
 		return 1;
 	}
 
+	// Before Ink takes over the keyboard: ask the terminal whether it is light or dark.
+	await applyTerminalTheme();
 	const ctx = await loadContext(cwd);
 	const [team, runs] = ctx.workspace.exists ? await Promise.all([loadEmployees(ctx.workspace.dir), listRuns(ctx.workspace.dir, 5)]) : [undefined, undefined];
 	// The app handles ctrl+c itself: the first press stops running employees.

@@ -41,11 +41,13 @@ export function wrapText(text: string, width: number): string[] {
 	return out;
 }
 
-const TOOL_ICON: Record<string, ReactNode> = {
-	done: <Text color={theme.ok}>{icons.ok}</Text>,
-	failed: <Text color={theme.fail}>{icons.fail}</Text>,
-	denied: <Text color={theme.warn}>⊘ blocked</Text>,
-};
+/** Built on use, not at load, so it follows the theme chosen at startup. */
+function toolIcon(status: string): ReactNode {
+	if (status === 'done') return <Text color={theme.ok}>{icons.ok}</Text>;
+	if (status === 'failed') return <Text color={theme.fail}>{icons.fail}</Text>;
+	if (status === 'denied') return <Text color={theme.warn}>⊘ blocked</Text>;
+	return undefined;
+}
 
 function formatDuration(ms: number): string {
 	const s = Math.round(ms / 1000);
@@ -119,7 +121,7 @@ export function buildRows(entries: ChatEntry[], name: string, role: string, widt
 						{'  '}
 						<Text color={theme.muted}>▸ {entry.name.padEnd(7)}</Text>
 						{entry.summary}{' '}
-						{entry.status === 'running' ? <Spinner /> : TOOL_ICON[entry.status]}
+						{entry.status === 'running' ? <Spinner /> : toolIcon(entry.status)}
 					</Text>
 				));
 				if (details && entry.output) {
