@@ -105,8 +105,11 @@ describe('App', () => {
 		await press(ui.stdin, 'r');
 		await waitFor(() => frame().includes('What should the team do?'), frame);
 		await press(ui.stdin, 'Review the repo please', ENTER);
-		await waitFor(() => /Rex\s+claude\s+\[reviewer\]\s+working\s+Review the repo/.test(frame()), frame);
-		await waitFor(() => frame().includes('Done after') && frame().includes('Rex reviewed everything. All good.'), frame);
+		await waitFor(() => /Rex\s+reviewer\s.*Review the repo/.test(frame()), frame);
+		await waitFor(() => frame().includes('This run has ended.') && frame().includes('Rex reviewed everything. All good.'), frame);
+		// The story of the run is in the feed.
+		expect(frame()).toContain('planned 1 task');
+		expect(frame()).toContain('Rex finished Review the repo');
 
 		// Back on the dashboard the run is listed.
 		await press(ui.stdin, ESC);
@@ -171,7 +174,7 @@ describe('App', () => {
 		await press(ui.stdin, '\u001B[B');
 		await waitFor(() => frame().includes('The login page validates emails now.') && frame().includes('$0.12'), frame);
 		await press(ui.stdin, ENTER);
-		await waitFor(() => frame().includes('run · Fix the login page') && frame().includes('Done after'), frame);
+		await waitFor(() => frame().includes('Fix the login page') && frame().includes('This run has ended.') && frame().includes('The login page validates emails now.'), frame);
 		ui.unmount();
 	});
 

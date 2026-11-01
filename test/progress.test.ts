@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import {diffStats, estimateEta, excerpt, formatClock, formatSpan, isTestRun, laneActivity, laneProgress, parseTestCounts, runProgress} from '../src/core/run/progress.js';
+import {diffStats, estimateEta, excerpt, formatClock, formatSpan, isTestRun, laneActivity, laneProgress, laneState, parseTestCounts, runProgress} from '../src/core/run/progress.js';
 import type {RunState, Task} from '../src/core/run/types.js';
 import type {ChatEntry} from '../src/core/transcript.js';
 
@@ -89,5 +89,27 @@ describe('diffStats', () => {
 			{file: 'src/a.ts', added: 2, removed: 1},
 			{file: 'b.md', added: 1, removed: 0},
 		]);
+	});
+});
+
+describe('laneState', () => {
+	const tasks = [task('api', 'maya', 'done'), task('ui', 'leo', 'blocked', {dependsOn: ['api', 'copy']}), task('copy', 'rex', 'running')];
+
+	it('says what each employee is doing', () => {
+		expect(laneState('rex', tasks, []).kind).toBe('working');
+		expect(laneState('rex', tasks, [], true).kind).toBe('attention');
+		expect(laneState('maya', tasks, []).kind).toBe('done');
+		expect(laneState('nobody', tasks, []).kind).toBe('idle');
+	});
+
+	it('names who a blocked employee is waiting for', () => {
+		expect(laneState('leo', tasks, [])).toMatchObject({kind: 'waiting', on: 'rex'});
+	});
+
+	it('queues ready tasks and flags failures', () => {
+		expect(laneState('a', [task('t', 'a', 'ready')], []).kind).toBe('queued');
+		expect(laneState('a', [task('t', 'a', 'failed')], []).kind).toBe('stuck');
+		// Running work wins over what comes after it.
+		expect(laneState('a', [task('t', 'a', 'running'), task('u', 'a', 'blocked')], []).kind).toBe('working');
 	});
 });

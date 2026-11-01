@@ -24,13 +24,15 @@ interface Props {
 	/** Reports every change, so parents can tell whether the input is empty. */
 	onChange?: (value: string) => void;
 	isActive?: boolean;
+	/** Color of the prompt glyph; defaults to the accent. */
+	promptColor?: string;
 }
 
 /**
  * Single-line input. ←→ move, ctrl+a/e or home/end jump, ctrl+w deletes a word, ctrl+u clears,
  * enter submits, esc cancels. Pasted newlines become spaces.
  */
-export function TextInput({initialValue = '', placeholder, prompt = '› ', onSubmit, onCancel, complete, allowEmpty, clearOnSubmit, onChange, isActive = true}: Props) {
+export function TextInput({initialValue = '', placeholder, prompt = '› ', onSubmit, onCancel, complete, allowEmpty, clearOnSubmit, onChange, isActive = true, promptColor = theme.accent}: Props) {
 	const [value, setValue] = useState(initialValue);
 	const [cursor, setCursor] = useState(initialValue.length);
 	const [candidates, setCandidates] = useState<string[]>([]);
@@ -86,7 +88,7 @@ export function TextInput({initialValue = '', placeholder, prompt = '› ', onSu
 	return (
 		<Box flexDirection="column">
 			<Text wrap="truncate-start">
-				<Text color={theme.accent}>{prompt}</Text>
+				<Text color={promptColor}>{prompt}</Text>
 				{value ? (
 					<>
 						{value.slice(0, cursor)}

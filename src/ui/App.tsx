@@ -114,6 +114,14 @@ export function App({initial, initialTeam, initialRuns, broker: injectedBroker}:
 
 	const runActive = run !== undefined && !isFinished(run.state.status);
 
+	// Hiring and firing while a run is going: the orchestrator is told, and new people can be given work.
+	useEffect(() => {
+		if (run && !isFinished(run.state.status)) run.syncTeam(team.employees);
+	}, [team.employees]);
+
+	/** Where to go after the hire form: back to the run it was opened from, else the dashboard. */
+	const [formFrom, setFormFrom] = useState<RunEngine>();
+
 	// Global keys, read even while a screen's input is gated.
 	// ctrl+a answers approvals. ctrl+c stops whatever is running first (a run, direct chats); with nothing running it quits.
 	useInput((input, key) => {
@@ -292,7 +300,18 @@ export function App({initial, initialTeam, initialRuns, broker: injectedBroker}:
 				/>
 			);
 		case 'run':
-			return <RunView run={screen.engine} onBack={toDashboard} onContinue={() => continueRun(screen.engine)} />;
+			return (
+				<RunView
+					run={screen.engine}
+					onBack={toDashboard}
+					onContinue={() => continueRun(screen.engine)}
+					onHire={() => {
+						setFormFrom(screen.engine);
+						setScreen({name: 'employee-form'});
+					}}
+					onFire={employee => void deleteEmployee(ctx.workspace.dir, employee.id).then(reloadTeam)}
+				/>
+			);
 		case 'chat':
 			return (
 				<Chat
@@ -314,9 +333,16 @@ export function App({initial, initialTeam, initialRuns, broker: injectedBroker}:
 					defaultProvider={defaultProvider()}
 					onSaved={id => {
 						setSelectedId(id);
-						void reloadTeam().then(toDashboard);
+						const back = formFrom;
+						setFormFrom(undefined);
+						void reloadTeam().then(() => (back ? setScreen({name: 'run', engine: back}) : toDashboard()));
 					}}
-					onBack={toDashboard}
+					onBack={() => {
+						const back = formFrom;
+						setFormFrom(undefined);
+						if (back) setScreen({name: 'run', engine: back});
+						else toDashboard();
+					}}
 				/>
 			);
 		case 'dashboard':

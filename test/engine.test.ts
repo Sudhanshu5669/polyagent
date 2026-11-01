@@ -110,6 +110,82 @@ describe('RunEngine', () => {
 		expect((await listRuns(path.join(dir, 'ws')))[0]).toMatchObject({id: run.state.id, status: 'done', tasks: 2, interrupted: false});
 	});
 
+	it("tells the run's story as events: plan, start, handoff, finish", async () => {
+		script({note: 'API then UI', tasks: [task('api', 'maya'), task('ui', 'leo', ['api'])]}, {note: 'waiting'}, {finish: 'All done.'});
+		const run = engine();
+		await run.done;
+
+		const events = run.state.events;
+		expect(events.map(e => e.id)).toEqual(events.map((_, i) => i + 1));
+		const kinds = events.map(e => `${e.kind}:${e.agent}`);
+		expect(kinds[0]).toBe('plan:orchestrator');
+		expect(events[0]).toMatchObject({text: 'planned 2 tasks'});
+		expect(events[0]!.detail).toContain('ui → Leo');
+		expect(kinds).toContain('start:maya');
+		expect(kinds).toContain('done:maya');
+		expect(kinds.at(-1)).toBe('finish:orchestrator');
+
+		// Leo's task builds on Maya's, so her report is handed over to him.
+		const handoff = events.find(e => e.kind === 'handoff')!;
+		expect(handoff).toMatchObject({agent: 'maya', to: 'leo', taskId: 'ui'});
+		expect(handoff.detail).toContain('Report for api: done');
+		// …and it comes before Leo starts.
+		expect(events.indexOf(handoff)).toBeLessThan(events.findIndex(e => e.kind === 'start' && e.agent === 'leo'));
+
+		const saved = await loadRun(path.join(dir, 'ws'), run.state.id);
+		expect(saved?.state.events).toHaveLength(events.length);
+	});
+
+	it('counts tokens and cost per task', async () => {
+		script({tasks: [task('api', 'maya')]}, {finish: 'done'});
+		const run = engine();
+		await run.done;
+		const api = run.state.tasks[0]!;
+		expect(api.costUsd).toBeGreaterThan(0);
+		expect(run.state.costUsd).toBeGreaterThan(api.costUsd!);
+		expect(run.state.tokens).toBeGreaterThanOrEqual(api.tokens ?? 0);
+	});
+
+	it('records a revision as an event with the feedback', async () => {
+		script({tasks: [task('api', 'maya')]}, {revisions: [{task: 'api', feedback: 'Add input validation'}]}, {finish: 'done'});
+		const run = engine();
+		await run.done;
+		const revision = run.state.events.find(e => e.kind === 'revision')!;
+		expect(revision).toMatchObject({agent: 'orchestrator', to: 'maya', taskId: 'api', detail: 'Add input validation'});
+		expect(run.state.events.filter(e => e.kind === 'start' && e.agent === 'maya')).toHaveLength(2);
+		// A revision is not a new handoff.
+		expect(run.state.events.some(e => e.kind === 'handoff')).toBe(false);
+	});
+
+	it('keeps a direct message for the employee, and tells the orchestrator', () => {
+		// No agent CLI is available, so nothing is started; this only checks what the engine records.
+		const options: EngineOptions = {workspaceDir: path.join(dir, 'ws2'), cwd: dir, employees: TEAM, orchestrator: 'claude', binaryFor: () => undefined, autoRun: true, maxParallel: null, cacheDir: path.join(tmpDir(), 'cache')};
+		const run = new RunEngine(options, 'Build it');
+		run.tellEmployee('maya', 'Please use zod');
+		expect(run.hasPendingMessage('maya')).toBe(true);
+		expect(run.hasPendingMessage('leo')).toBe(false);
+		expect(run.logs.maya).toEqual([expect.objectContaining({kind: 'user', text: 'Please use zod'})]);
+		expect(run.state.events).toEqual([expect.objectContaining({kind: 'user', agent: 'user', to: 'maya', text: 'Please use zod'})]);
+		// Someone who isn't on the team: it goes to the orchestrator instead.
+		run.tellEmployee('nobody', 'hello');
+		expect(run.state.events.at(-1)).toMatchObject({kind: 'user', to: 'orchestrator'});
+	});
+
+	it('picks up hires, and keeps someone with unfinished work until it is done', async () => {
+		process.env.FAKE_SLEEP_MS = '300';
+		script({tasks: [task('api', 'maya')]}, {finish: 'done'});
+		const run = engine();
+		await waitFor(() => run.isBusy('maya'));
+		run.syncTeam([employee('leo', 'frontend'), employee('rex', 'reviewer'), employee('zoe', 'docs')]);
+		const ids = run.employees.map(e => e.id);
+		expect(ids).toContain('zoe');
+		expect(ids).toContain('maya');
+		expect(run.state.events.filter(e => e.kind === 'hire').map(e => e.to)).toEqual(['zoe']);
+		expect(run.state.events.some(e => e.kind === 'fire' && e.to === 'maya')).toBe(false);
+		await run.done;
+		run.cancel();
+	});
+
 	it("shows the orchestrator the repo's uncommitted changes after each task", async () => {
 		execFileSync('git', ['init', '-q'], {cwd: dir});
 		execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'base'], {cwd: dir});
@@ -295,6 +371,47 @@ describe('RunEngine with worktrees', () => {
 		// Worktrees are gone afterwards; the branch is unchanged.
 		expect(execFileSync('git', ['worktree', 'list'], {cwd: dir, encoding: 'utf8'}).trim().split('\n')).toHaveLength(1);
 		expect(execFileSync('git', ['branch', '--show-current'], {cwd: dir, encoding: 'utf8'}).trim()).toBe('main');
+	});
+
+	it("keeps each task's diff and records merges as events", async () => {
+		gitRepo();
+		process.env.FAKE_WRITE = '1';
+		script({tasks: [task('api', 'maya'), task('ui', 'leo')]}, {}, {finish: 'done'});
+		const run = engine();
+		await run.done;
+
+		const [api, ui] = run.state.tasks;
+		expect(api!.patch).toContain('diff --git a/api.txt b/api.txt');
+		expect(api!.patch).toContain('+written by api (attempt 1)');
+		expect(api!.patch).not.toContain('ui.txt');
+		expect(ui!.patch).toContain('+written by ui (attempt 1)');
+
+		const merges = run.state.events.filter(e => e.kind === 'merge');
+		expect(merges.map(e => e.taskId).sort()).toEqual(['api', 'ui']);
+		expect(merges[0]!.text).toMatch(/^merged ⎇ \w+ → main$/);
+		expect(merges[0]!.detail).toContain('1 file · no conflicts');
+		// A merge comes after the task starts and before the run finishes.
+		const at = (kind: string, taskId: string) => run.state.events.findIndex(e => e.kind === kind && e.taskId === taskId);
+		expect(at('start', 'api')).toBeLessThan(at('merge', 'api'));
+		expect(at('merge', 'api')).toBeLessThan(run.state.events.findIndex(e => e.kind === 'finish'));
+	});
+
+	it('shows what an employee has changed so far, including new files', async () => {
+		gitRepo();
+		process.env.FAKE_WRITE = '1';
+		process.env.FAKE_SLEEP_MS = '2500';
+		script({tasks: [task('api', 'maya')]}, {}, {finish: 'done'});
+		const run = engine();
+		// The fake agent writes its file after the sleep, so poll for it.
+		await waitFor(() => run.isBusy('maya'));
+		expect(await run.liveDiff('nobody')).toBeUndefined();
+		let live: string | undefined;
+		await waitFor(() => {
+			void run.liveDiff('maya').then(d => (live = d));
+			return live?.includes('api.txt') ?? false;
+		});
+		expect(live).toContain('+written by api (attempt 1)');
+		await run.done;
 	});
 
 	it('reports a clash, and the revision starts from the merged code', async () => {

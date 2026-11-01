@@ -127,6 +127,11 @@ export class RunEngine {
 		return this.options.employees;
 	}
 
+	/** The run budget in dollars, or null when there is none. */
+	get budget(): number | null {
+		return this.options.runBudget ?? null;
+	}
+
 	subscribe = (listener: () => void): (() => void) => {
 		this.listeners.add(listener);
 		return () => this.listeners.delete(listener);

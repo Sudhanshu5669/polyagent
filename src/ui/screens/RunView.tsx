@@ -1,386 +1,458 @@
 import {Box, Text, useAnimation, useWindowSize} from 'ink';
-import {useKeys} from '../input.js';
-import {useEffect, useMemo, useState, useSyncExternalStore, type ReactNode} from 'react';
+import {useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode} from 'react';
 import type {Employee} from '../../core/employees.js';
-import {PROVIDERS} from '../../core/providers.js';
+import {COMMANDS, parseInput} from '../../core/run/input.js';
 import type {RunEngine} from '../../core/run/engine.js';
-import {isFinished, ORCHESTRATOR, type RunState, type Task, type TaskStatus} from '../../core/run/types.js';
-import {Frame} from '../components/Frame.js';
-import type {Hint} from '../components/KeyHints.js';
+import {estimateEta, excerpt, formatClock, formatSpan, formatTokens, runProgress} from '../../core/run/progress.js';
+import {isFinished, ORCHESTRATOR} from '../../core/run/types.js';
 import {Paragraph} from '../components/Paragraph.js';
-import {RoleTag} from '../components/RoleTag.js';
-import {Spinner} from '../components/Spinner.js';
-import {TextInput} from '../components/TextInput.js';
-import {buildRows, Viewport} from '../components/Transcript.js';
 import {usePendingApprovals} from '../approvalsContext.js';
-import {icons, theme} from '../theme.js';
+import {useKeys} from '../input.js';
+import {buildFeed, FeedView} from '../run/Feed.js';
+import {FocusMain, Sidebar, SIDEBAR_MAX, SIDEBAR_MIN, tabsFor, type Tab} from '../run/Focus.js';
+import {LaneRow, lanesFor} from '../run/Lanes.js';
+import {Palette, type PaletteItem} from '../run/Palette.js';
+import {CostPanel, MergePanel} from '../run/Panels.js';
+import {Bar, Canvas, makeWho, type KeyHint} from '../run/parts.js';
+import {Prompt} from '../run/Prompt.js';
+import {TasksView} from '../run/Tasks.js';
+import {theme} from '../theme.js';
 
-type Mode = 'overview' | 'watch' | 'tasks';
+type View = {name: 'briefing'} | {name: 'focus'; agent: string; tab: Tab} | {name: 'tasks'; row: number};
+type Panel = 'cost' | 'merge';
 
 interface Props {
 	run: RunEngine;
 	onBack: () => void;
 	/** Continue a run that was interrupted when polyagent last quit. */
 	onContinue: () => void;
+	/** /hire: go to the hire form. */
+	onHire?: () => void;
+	/** /fire: let an employee go. */
+	onFire?: (employee: Employee) => void;
 }
 
-export function formatElapsed(ms: number): string {
-	const s = Math.max(0, Math.floor(ms / 1000));
-	const h = Math.floor(s / 3600);
-	const m = Math.floor((s % 3600) / 60);
-	const pad = (n: number) => String(n).padStart(2, '0');
-	return h ? `${h}:${pad(m)}:${pad(s % 60)}` : `${pad(m)}:${pad(s % 60)}`;
-}
+/** How long away counts as away. */
+const AWAY_MS = 60_000;
+/** After this much quiet, the next key press opens an "away" window. */
+const IDLE_MS = 5 * 60_000;
+/** How long the "while you were away" banner stays before the feed goes back to plain activity. */
+const AWAY_SHOWN_MS = 5 * 60_000;
 
-const TASK_ICON: Record<TaskStatus, ReactNode> = {
-	blocked: <Text color={theme.muted}>◷</Text>,
-	ready: <Text color={theme.muted}>◷</Text>,
-	running: <Spinner />,
-	done: <Text color={theme.ok}>{icons.ok}</Text>,
-	failed: <Text color={theme.fail}>{icons.fail}</Text>,
-	cancelled: <Text color={theme.muted}>⊘</Text>,
-};
-
-type EmployeeStatus = {label: string; icon: ReactNode; task?: Task; since?: number};
-
-/** What an employee is doing right now, from their tasks in this run. */
-function employeeStatus(employee: Employee, tasks: Task[], waitingOnYou = false): EmployeeStatus {
-	const mine = tasks.filter(t => t.assignee === employee.id);
-	const running = mine.find(t => t.status === 'running');
-	if (running && waitingOnYou) return {label: 'needs you', icon: <Text color={theme.warn}>⚑</Text>, task: running, since: running.startedAt};
-	if (running) return {label: 'working', icon: <Spinner />, task: running, since: running.startedAt};
-	const waiting = mine.find(t => t.status === 'ready' || t.status === 'blocked');
-	if (waiting) return {label: waiting.status === 'ready' ? 'queued' : 'waiting', icon: TASK_ICON.blocked, task: waiting};
-	const last = mine.at(-1);
-	if (last?.status === 'failed') return {label: 'failed', icon: TASK_ICON.failed, task: last};
-	if (last?.status === 'done') return {label: 'done', icon: TASK_ICON.done, task: last};
-	return {label: 'idle', icon: <Text color={theme.muted}>{icons.dot}</Text>};
-}
-
-function orchestratorStatus(state: RunState, interrupted: boolean): string {
-	if (interrupted) return 'interrupted';
-	if (state.paused) return state.paused.reason === 'budget' ? 'paused: budget reached' : 'paused';
-	if (state.status === 'planning') return 'planning';
-	if (state.status === 'awaiting-approval') return 'waiting for your approval';
-	if (state.orchestrator.working) return 'reviewing';
-	if (isFinished(state.status)) return state.status;
-	return 'waiting for employees';
-}
-
-export function RunView({run, onBack, onContinue}: Props) {
+export function RunView({run, onBack, onContinue, onHire, onFire}: Props) {
 	useSyncExternalStore(run.subscribe, () => run.version);
 	const pending = usePendingApprovals();
-	const waitingOnYou = (id: string) => pending.some(r => r.agent === id);
 	// Ticks once a second for the clocks.
 	useAnimation({interval: 1000, isActive: !isFinished(run.state.status)});
 	const {columns, rows} = useWindowSize();
 	const {state} = run;
+	const now = Date.now();
 
-	const [mode, setMode] = useState<Mode>('overview');
-	const [selected, setSelected] = useState(0);
-	const [taskRow, setTaskRow] = useState(0);
+	const [view, setView] = useState<View>({name: 'briefing'});
+	const [typing, setTyping] = useState(false);
+	const [typingKey, setTypingKey] = useState(0);
+	const [initialText, setInitialText] = useState('');
+	const [palette, setPalette] = useState(false);
+	const [panel, setPanel] = useState<Panel>();
+	const [selectedEvent, setSelectedEvent] = useState<number>();
+	const [expanded, setExpanded] = useState<ReadonlySet<number>>(new Set());
 	const [offset, setOffset] = useState(0);
 	const [details, setDetails] = useState(false);
-	const [draft, setDraft] = useState('');
+	const [sidebar, setSidebar] = useState(26);
+	const [notice, setNotice] = useState<string>();
 
-	// Employees with work in this run come first.
-	const roster = useMemo(() => {
-		const involved = new Set(state.tasks.map(t => t.assignee));
-		return [...run.employees.filter(e => involved.has(e.id)), ...run.employees.filter(e => !involved.has(e.id))];
-	}, [run.employees, state.tasks.length]);
-	const agents = [ORCHESTRATOR, ...roster.map(e => e.id)];
-	const agentId = agents[Math.min(selected, agents.length - 1)]!;
-	const agentEmployee = roster.find(e => e.id === agentId);
+	// "While you were away": since the last time anyone looked at this run.
+	const [awaySince, setAwaySince] = useState<number | undefined>(() => {
+		const seen = run.lastViewedAt;
+		return seen && !isFinished(run.state.status) && Date.now() - seen >= AWAY_MS ? seen : undefined;
+	});
+	const attachedAt = useRef(Date.now());
+	const lastKey = useRef(Date.now());
+	useEffect(
+		() => () => {
+			run.lastViewedAt = Date.now();
+		},
+		[run],
+	);
+
+	const tellUser = (text: string) => {
+		setNotice(text);
+	};
+
+	useEffect(() => {
+		if (!notice) return;
+		const timer = setTimeout(() => setNotice(undefined), 6000);
+		return () => clearTimeout(timer);
+	}, [notice]);
+
+	const who = useMemo(() => makeWho(run.employees), [run.employees, state.tasks.length]);
+	const lanes = lanesFor(run);
+	const finished = isFinished(state.status);
+	const interrupted = run.interrupted;
+	const awaiting = state.status === 'awaiting-approval';
+	const needsYou = (id: string) => pending.some(r => r.agent === id);
 
 	const width = columns - 4;
-	const interrupted = run.interrupted;
-	const finished = isFinished(state.status);
-	const awaiting = state.status === 'awaiting-approval';
-	const page = Math.max(1, rows - 12);
+	const agentAt = (index: number) => lanes[index]?.agent;
+	const openAgent = (agent: string, tab: Tab = 'stream') => {
+		setOffset(0);
+		setView({name: 'focus', agent, tab});
+	};
 
-	useEffect(() => setOffset(0), [agentId, mode]);
+	const showAway = awaySince !== undefined && now - attachedAt.current < AWAY_SHOWN_MS;
+	const layout = useMemo(
+		() => buildFeed({events: state.events, who, width, selected: selectedEvent, expanded, awaySince: showAway ? awaySince : undefined, now}),
+		// `now` only matters for the "away" label; minute resolution is plenty.
+		[state.events.length, who, width, selectedEvent, expanded, awaySince, showAway, Math.floor(now / 60_000)],
+	);
+
+	const focusEmployee = view.name === 'focus' ? run.employees.find(e => e.id === view.agent) : undefined;
+
+	const moveEvent = (delta: number) => {
+		const order = layout.order;
+		if (order.length === 0) return;
+		const at = selectedEvent === undefined ? -1 : order.findIndex(e => e.id === selectedEvent);
+		const next = Math.max(0, Math.min(order.length - 1, (at === -1 ? (delta > 0 ? -1 : 0) : at) + delta));
+		setSelectedEvent(order[next]!.id);
+	};
+
+	const toggleExpanded = (id: number) =>
+		setExpanded(current => {
+			const next = new Set(current);
+			if (!next.delete(id)) next.add(id);
+			return next;
+		});
+
+	const startTyping = (initial = '') => {
+		setInitialText(initial);
+		setTypingKey(k => k + 1);
+		setTyping(true);
+	};
+
+	const runCommand = (name: string, employee?: Employee) => {
+		switch (name) {
+			case 'hire':
+				return onHire ? onHire() : tellUser('Hire people from the dashboard.');
+			case 'fire':
+				if (!employee) return;
+				if (run.state.tasks.some(t => t.assignee === employee.id && ['blocked', 'ready', 'running'].includes(t.status))) return tellUser(`${employee.name} still has work in this run. Try again when it's done.`);
+				return onFire ? onFire(employee) : tellUser('Let people go from the dashboard.');
+			case 'merge':
+				return setPanel('merge');
+			case 'cost':
+				return setPanel('cost');
+			case 'tasks':
+				return setView({name: 'tasks', row: 0});
+			case 'pause':
+				return finished || interrupted ? undefined : run.pause();
+			case 'resume':
+				return run.resume();
+			case 'stop':
+				return finished ? undefined : run.cancel();
+		}
+	};
+
+	const submit = (text: string) => {
+		const parsed = parseInput(text, run.employees, focusEmployee);
+		switch (parsed.kind) {
+			case 'error':
+				return tellUser(parsed.message);
+			case 'tell':
+				return run.tell(parsed.text);
+			case 'employee': {
+				const busy = run.isBusy(parsed.employee.id);
+				run.tellEmployee(parsed.employee.id, parsed.text);
+				return tellUser(busy ? `${parsed.employee.name} is mid-task; they'll get it with their next one.` : `Sent to ${parsed.employee.name}. The orchestrator knows too.`);
+			}
+
+			case 'command':
+				setTyping(false);
+				return runCommand(parsed.name, parsed.employee);
+		}
+	};
+
+	const paletteItems = (): PaletteItem[] => {
+		const items: PaletteItem[] = [];
+		for (const lane of lanes) {
+			const w = who(lane.agent);
+			items.push({id: `open-${lane.agent}`, group: 'Employees', label: `Open ${w.name}`, hint: lane.employee?.role ?? 'orchestrator', lead: <Text color={w.color}>{w.glyph}</Text>, run: () => openAgent(lane.agent)});
+		}
+
+		state.tasks.forEach((t, row) => items.push({id: `task-${t.id}`, group: 'Tasks', label: `${t.id}: ${t.title}`, hint: `${who(t.assignee).name} · ${t.status}`, run: () => setView({name: 'tasks', row})}));
+		for (const e of [...state.events].reverse().slice(0, 40)) {
+			items.push({
+				id: `event-${e.id}`,
+				group: 'Events',
+				label: `${who(e.agent).name} ${e.text}`,
+				run: () => {
+					setView({name: 'briefing'});
+					setSelectedEvent(e.id);
+					setExpanded(c => new Set(c).add(e.id));
+				},
+			});
+		}
+
+		for (const c of COMMANDS) {
+			if (c.name === 'fire') {
+				for (const e of run.employees) items.push({id: `fire-${e.id}`, group: 'Commands', label: `/fire ${e.id}`, hint: c.help, run: () => runCommand('fire', e)});
+			} else items.push({id: `cmd-${c.name}`, group: 'Commands', label: `/${c.name}`, hint: c.help, run: () => runCommand(c.name)});
+		}
+
+		items.push({id: 'back', group: 'Commands', label: 'Back to the dashboard', hint: finished ? '' : 'the run keeps going', run: onBack});
+		return items;
+	};
 
 	useKeys((input, key) => {
-		const empty = draft.trim() === '';
-		if (key.ctrl && input === 't') return setMode(m => (m === 'tasks' ? 'overview' : 'tasks'));
+		const at = Date.now();
+		if (at - lastKey.current > IDLE_MS && !finished) setAwaySince(lastKey.current);
+		lastKey.current = at;
+
+		if (key.ctrl && input === 'k') return setPalette(p => !p);
+		if (palette) return;
+		if (key.ctrl && input === 't') return setView(v => (v.name === 'tasks' ? {name: 'briefing'} : {name: 'tasks', row: 0}));
 		if (key.ctrl && input === 'r' && interrupted) return onContinue();
 		if (key.ctrl && input === 'p' && !finished && !interrupted) return state.paused ? run.resume() : run.pause();
 		if (key.ctrl && input === 'o') return setDetails(d => !d);
+		if (typing) return;
 
-		if (mode === 'overview') {
-			if (key.escape) return onBack();
-			if (key.upArrow) setSelected(s => (s - 1 + agents.length) % agents.length);
-			else if (key.downArrow) setSelected(s => (s + 1) % agents.length);
-			else if (key.return && empty) {
-				if (awaiting) run.approve();
-				else setMode('watch');
+		if (panel) {
+			if (key.escape || input === 'q') setPanel(undefined);
+			return;
+		}
+
+		const printable = input.length === 1 && !key.ctrl && !key.meta && input >= ' ';
+
+		if (view.name === 'tasks') {
+			if (key.escape || input === 'q') return setView({name: 'briefing'});
+			if (key.upArrow || input === 'k') setView({name: 'tasks', row: Math.max(0, view.row - 1)});
+			else if (key.downArrow || input === 'j') setView({name: 'tasks', row: Math.min(state.tasks.length - 1, view.row + 1)});
+			return;
+		}
+
+		if (view.name === 'focus') {
+			const tabs = tabsFor(view.agent);
+			const index = lanes.findIndex(l => l.agent === view.agent);
+			const go = (next: number) => {
+				const agent = agentAt((next + lanes.length) % lanes.length)!;
+				setOffset(0);
+				setView({name: 'focus', agent, tab: tabsFor(agent).includes(view.tab) ? view.tab : 'stream'});
+			};
+			const page = Math.max(1, rows - 12);
+			const fromTop = view.tab === 'diff';
+			const up = fromTop ? -1 : 1;
+			if (key.escape) return setView({name: 'briefing'});
+			if (input === 'q') return onBack();
+			if (input === 'j') return go(index + 1);
+			if (input === 'k') return go(index - 1);
+			if (/^[0-9]$/.test(input)) {
+				const agent = agentAt(Number(input));
+				return agent ? openAgent(agent, tabs.includes(view.tab) ? view.tab : 'stream') : undefined;
+			}
+
+			if (key.tab) {
+				const next = tabs[(tabs.indexOf(view.tab) + (key.shift ? -1 : 1) + tabs.length) % tabs.length]!;
+				setOffset(0);
+				return setView({...view, tab: next});
+			}
+
+			if (key.upArrow) return setOffset(o => Math.max(0, o + up));
+			if (key.downArrow) return setOffset(o => Math.max(0, o - up));
+			if (key.pageUp) return setOffset(o => Math.max(0, o + up * page));
+			if (key.pageDown) return setOffset(o => Math.max(0, o - up * page));
+			if (input === 'g') return setOffset(0);
+			if (key.return || input === 'i') return startTyping();
+			if (input === '/' || input === '@') return startTyping(input);
+			if (printable) return startTyping(input);
+			return;
+		}
+
+		// Briefing, normal mode.
+		if (key.escape || input === 'q') return onBack();
+		if (/^[0-9]$/.test(input)) {
+			const agent = agentAt(Number(input));
+			return agent ? openAgent(agent) : undefined;
+		}
+
+		if (input === 'j' || key.downArrow) return moveEvent(1);
+		if (input === 'k' || key.upArrow) return moveEvent(-1);
+		if (input === 'g') return setSelectedEvent(undefined);
+		if (input === 'G') return setSelectedEvent(layout.order.at(-1)?.id);
+		if (key.return) {
+			if (awaiting) return run.approve();
+			const target = selectedEvent ?? layout.order[0]?.id;
+			if (target !== undefined) {
+				setSelectedEvent(target);
+				toggleExpanded(target);
 			}
 
 			return;
 		}
 
-		if (mode === 'watch') {
-			if (key.escape) return setMode('overview');
-			if (key.tab) setSelected(s => (s + (key.shift ? -1 : 1) + agents.length) % agents.length);
-			else if (key.upArrow) setOffset(o => o + 1);
-			else if (key.downArrow) setOffset(o => Math.max(0, o - 1));
-			else if (key.pageUp) setOffset(o => o + page);
-			else if (key.pageDown) setOffset(o => Math.max(0, o - page));
-			else if (key.ctrl && input === 'g') setOffset(0);
-			return;
-		}
-
-		if (key.escape) return setMode('overview');
-		if (key.upArrow) setTaskRow(r => Math.max(0, r - 1));
-		else if (key.downArrow) setTaskRow(r => Math.min(state.tasks.length - 1, r + 1));
+		if (input === 'i') return startTyping();
+		if (input === '/' || input === '@') return startTyping(input);
+		if (printable) return startTyping(input);
 	});
 
-	const tell = (text: string) => {
-		const prefix = mode === 'watch' && agentEmployee ? `(about ${agentEmployee.name}) ` : '';
-		run.tell(prefix + text);
-	};
+	// Layout ------------------------------------------------------------------
+	const progress = runProgress(state);
+	const eta = !finished && !state.paused && !interrupted ? estimateEta(state, now) : undefined;
+	const elapsed = formatClock((state.endedAt ?? now) - state.createdAt);
+	const target = focusEmployee ? who(focusEmployee.id) : who(ORCHESTRATOR);
+	const detach: KeyHint = ['q', finished ? 'back' : 'detach · keeps running'];
+	const pause: KeyHint[] = finished || interrupted ? [] : [['^p', state.paused ? 'resume' : 'pause']];
 
-	const counts = {
-		working: state.tasks.filter(t => t.status === 'running').length,
-		waiting: state.tasks.filter(t => t.status === 'blocked' || t.status === 'ready').length,
-		done: state.tasks.filter(t => t.status === 'done').length,
-	};
-	const elapsed = formatElapsed((state.endedAt ?? Date.now()) - state.createdAt);
-	const right = (
-		<Text color={theme.muted}>
-			{finished ? state.status : interrupted ? 'interrupted' : state.paused ? 'paused' : `${counts.working} working · ${counts.waiting} waiting`} · {elapsed}
-			{state.costUsd > 0 ? ` · $${state.costUsd.toFixed(2)}` : ''}
-		</Text>
-	);
+	let hints: KeyHint[];
+	let rightHints: KeyHint[] = [detach];
+	if (palette) {
+		hints = [['↑↓', 'choose'], ['⏎', 'run'], ['esc', 'close']];
+		rightHints = [];
+	} else if (typing) {
+		hints = [['⏎', 'send'], ['tab', 'complete'], ['esc', 'normal mode']];
+		rightHints = [];
+	} else if (panel) {
+		hints = [['esc', 'close']];
+	} else if (view.name === 'tasks') {
+		hints = [['j/k', 'select'], ['^t', 'close'], ['esc', 'back']];
+	} else if (view.name === 'focus') {
+		hints = [['j/k', 'employee'], ['tab', 'stream·diff·tests·chat'], ['↑↓', 'scroll'], ['⏎', 'message'], ['esc', 'back'], ['^k', 'palette']];
+	} else if (interrupted) {
+		hints = [['^r', 'continue this run'], ['j/k', 'scroll feed'], ['1–9', 'open employee'], ['^k', 'palette']];
+	} else if (awaiting) {
+		hints = [['⏎', 'start the plan'], ['i', 'ask for changes'], ['1–9', 'open employee'], ['^k', 'palette']];
+	} else {
+		hints = [['j/k', 'scroll feed'], ['1–9', 'open employee'], ['⏎', 'expand event'], ['/', 'command'], ['@', 'mention'], ...pause, ['^k', 'palette']];
+	}
 
-	const hints: Hint[] =
-		mode === 'watch'
-			? [['tab', 'next agent'], ['↑↓ pgup pgdn', 'scroll'], ['ctrl+o', details ? 'less' : 'details'], ['ctrl+t', 'tasks'], ['esc', 'overview']]
-			: mode === 'tasks'
-				? [['↑↓', 'select'], ['ctrl+t', 'close'], ['esc', 'overview']]
-				: interrupted
-					? [['ctrl+r', 'continue this run'], ['↑↓', 'select'], ['⏎', 'watch'], ['ctrl+t', 'tasks'], ['esc', 'dashboard']]
-					: awaiting
-						? [['⏎', 'start the plan'], ['type', 'ask for changes'], ['ctrl+c', 'cancel run'], ['esc', 'dashboard']]
-						: [
-								['↑↓', 'select'],
-								['⏎', 'watch'],
-								['ctrl+t', 'tasks'],
-								...(finished ? [] : ([['ctrl+p', state.paused ? 'resume' : 'pause'], ['ctrl+c', 'stop run']] as Hint[])),
-								['esc', 'dashboard'],
-							];
+	const notices: ReactNode[] = [];
+	if (notice) notices.push(<Text key="n" color={theme.strong} wrap="truncate">{notice}</Text>);
+	if (awaiting) notices.push(<Text key="a" color={theme.warn} wrap="truncate">Review the plan in the feed. ⏎ starts it; type to ask the orchestrator for changes.</Text>);
+	if (state.paused && !finished) {
+		notices.push(
+			<Text key="p" color={theme.warn} wrap="truncate">
+				{state.paused.reason === 'budget' ? `Paused at $${state.costUsd.toFixed(2)}: the run reached its budget. ^p resumes and allows another budget's worth.` : 'Paused: running tasks finish, nothing new starts. ^p resumes.'}
+			</Text>,
+		);
+	}
 
-	const input = finished ? (
-		<Text color={theme.muted}>This run has ended.</Text>
-	) : interrupted ? (
-		<Text color={theme.warn}>
-			This run was interrupted when polyagent quit. Press <Text bold>ctrl+r</Text> to continue it.
-		</Text>
-	) : (
-		<TextInput
-			placeholder={mode === 'watch' && agentEmployee ? `Tell the orchestrator about ${agentEmployee.name}` : 'Tell the orchestrator something'}
-			onSubmit={tell}
-			onChange={setDraft}
-			clearOnSubmit
+	if (interrupted) notices.push(<Text key="i" color={theme.warn} wrap="truncate">This run was interrupted when polyagent quit. Press ^r to continue it.</Text>);
+	if (state.unapplied.length) {
+		notices.push(
+			<Text key="u" color={theme.warn} wrap="truncate">
+				⚠ You changed {state.unapplied.join(', ')} during the run; the team's versions were kept aside. /merge has the details.
+			</Text>,
+		);
+	}
+
+	const bodyRows = rows - 2 - notices.length; // top padding + hint line
+	const promptRows = 3;
+
+	const prompt = (
+		<Prompt
+			key={typingKey}
+			typing={typing}
+			employees={run.employees}
+			target={target}
+			width={width}
+			initial={initialText}
+			placeholder={focusEmployee ? `message ${focusEmployee.name}, or @ someone else…` : 'tell the orchestrator what to change, @ an employee, or / for commands'}
+			onSubmit={submit}
+			onExit={() => setTyping(false)}
+			disabled={finished ? 'This run has ended.' : interrupted ? 'This run was interrupted. Press ^r to continue it.' : undefined}
 		/>
 	);
 
-	const title = `run · ${state.request.replace(/\s+/g, ' ')}`;
-
-	if (mode === 'watch') {
-		const name = agentEmployee?.name ?? 'Orchestrator';
-		const task = agentEmployee ? employeeStatus(agentEmployee, state.tasks, waitingOnYou(agentEmployee.id)).task : undefined;
-		const height = Math.max(3, rows - 7);
-		const allRows = buildRows(run.logs[agentId] ?? [], name, agentEmployee?.role ?? 'orchestrator', width, details);
-		const clamped = Math.min(offset, Math.max(0, allRows.length - height));
-		return (
-			<Frame
-				title={`${name} · ${agentEmployee ? PROVIDERS[agentEmployee.provider].label : PROVIDERS[state.orchestrator.provider].label}${task ? ` · ${task.title}` : ''}`}
-				right={
-					<Text>
-						{agentEmployee ? <RoleTag role={agentEmployee.role} /> : <Text color={theme.accent}>◆ orchestrator</Text>}
-						<Text color={theme.muted}>
-							{' '}
-							{selected + 1}/{agents.length}
-						</Text>
-					</Text>
-				}
-				hints={hints}
-			>
-				{allRows.length ? (
-					<Viewport rows={allRows} height={height} offset={clamped} />
-				) : (
-					<Box height={height}>
-						<Text color={theme.muted}>
-							{task?.status === 'blocked'
-								? `${name}'s task "${task.title}" starts when ${task.dependsOn.join(', ')} ${task.dependsOn.length > 1 ? 'are' : 'is'} done.`
-								: task?.status === 'ready'
-									? `${name}'s task "${task.title}" is queued and starts when a slot frees up.`
-									: agentEmployee
-										? `${name} hasn't been given any work in this run.`
-										: 'The orchestrator is starting up.'}
-						</Text>
-					</Box>
-				)}
-				<Text color={theme.border}>{'─'.repeat(width)}</Text>
-				{input}
-			</Frame>
-		);
-	}
-
-	if (mode === 'tasks') {
-		const task = state.tasks[Math.min(taskRow, state.tasks.length - 1)];
-		const nameOf = (id: string) => run.employees.find(e => e.id === id)?.name ?? id;
-		return (
-			<Frame title={`${title} · tasks`} right={right} hints={hints}>
-				{state.tasks.length === 0 ? <Text color={theme.muted}>No tasks yet. The orchestrator is still planning.</Text> : null}
-				{state.tasks.map((t, i) => (
-					<Text key={t.id} wrap="truncate">
-						<Text color={theme.accent}>{i === taskRow ? `${icons.pointer} ` : '  '}</Text>
-						{TASK_ICON[t.status]} <Text bold={i === taskRow}>{t.id.padEnd(16)}</Text> {nameOf(t.assignee).padEnd(10)} {t.title}
-						<Text color={theme.muted}>
-							{t.dependsOn.length ? `  after ${t.dependsOn.join(', ')}` : ''}
-							{t.revisions ? `  revised ${t.revisions}×` : ''}
-						</Text>
-					</Text>
-				))}
-				{task ? (
-					<Box flexDirection="column" marginTop={1}>
-						<Text color={theme.muted}>Brief</Text>
-						<Paragraph>{clip(task.brief, 6, width)}</Paragraph>
-						{task.files?.length ? (
-							<Text wrap="truncate">
-								<Text color={theme.muted}>Changed </Text>
-								{task.files.join(', ')}
-							</Text>
-						) : null}
-						{task.report || task.error ? (
-							<>
-								<Text color={theme.muted}>{task.error ? 'Error' : 'Report'}</Text>
-								<Paragraph color={task.error ? theme.fail : undefined}>{clip(task.error ?? task.report ?? '', 6, width)}</Paragraph>
-							</>
-						) : null}
-					</Box>
-				) : null}
-			</Frame>
-		);
-	}
-
-	// Overview
-	const tail = buildRows(run.logs[agentId] ?? [], agentEmployee?.name ?? 'Orchestrator', agentEmployee?.role ?? 'orchestrator', width - 2, false).slice(-3);
-	return (
-		<Frame
-			title={title}
-			right={right}
-			hints={hints}
-			notice={
-				awaiting ? (
-					<Text color={theme.warn}>Review the plan below. ⏎ starts it; type to ask the orchestrator for changes.</Text>
-				) : state.paused && !finished ? (
-					<Text color={theme.warn}>
-						{state.paused.reason === 'budget'
-							? `Paused at $${state.costUsd.toFixed(2)}: the run reached its budget. ctrl+p resumes and allows another budget's worth.`
-							: 'Paused: running tasks finish, nothing new starts. ctrl+p resumes.'}
-					</Text>
-				) : undefined
-			}
-		>
-			<Text wrap="truncate">
-				<Text color={theme.accent}>{selected === 0 ? `${icons.pointer} ` : '  '}</Text>
-				<Text bold color={theme.accent}>
-					◆ ORCHESTRATOR
-				</Text>
-				<Text color={theme.muted}> {PROVIDERS[state.orchestrator.provider].bins[0]} </Text>
-				{state.orchestrator.working && !interrupted ? <Spinner /> : null} {orchestratorStatus(state, interrupted)}
-				<Text color={theme.muted}>
-					{' '}
-					· {counts.done}/{state.tasks.length} tasks done
-				</Text>
-			</Text>
-			{state.orchestrator.note ? (
-				<Text color={theme.muted} wrap="truncate">
-					{'    '}
-					{state.orchestrator.note}
-				</Text>
-			) : null}
-			{state.isolation ? (
-				<Text color={theme.muted} wrap="truncate">
-					{'    '}
-					{state.isolation.mode === 'worktrees'
-						? 'Parallel: each employee has their own worktree; finished work is merged into your working tree.'
-						: `One task at a time: ${state.isolation.reason}.`}
-				</Text>
-			) : null}
-			{state.unapplied.length ? (
-				<Text color={theme.warn} wrap="truncate">
-					{'    '}
-					{icons.warn} You changed {state.unapplied.join(', ')} during the run; the team's versions were kept aside.
-				</Text>
-			) : null}
-
-			<Box marginTop={1} flexDirection="column" flexShrink={0}>
-				<Text color={theme.muted} wrap="truncate">
-					{'    '}
-					{'EMPLOYEE'.padEnd(11)}
-					{'CLI'.padEnd(8)}
-					{'ROLE'.padEnd(14)}
-					{'STATUS'.padEnd(11)}TASK
-				</Text>
-				{roster.map((e, i) => {
-					const status = employeeStatus(e, state.tasks, waitingOnYou(e.id));
-					const isSelected = selected === i + 1;
-					const role = `[${e.role}]`;
-					return (
-						<Text key={e.id} wrap="truncate" dimColor={status.label === 'idle'}>
-							<Text color={theme.accent}>{isSelected ? `${icons.pointer} ` : '  '}</Text>
-							{status.icon} <Text bold={isSelected}>{e.name.slice(0, 10).padEnd(11)}</Text>
-							<Text color={theme.muted}>{PROVIDERS[e.provider].bins[0]!.padEnd(8)}</Text>
-							<RoleTag role={e.role} />
-							{' '.repeat(Math.max(1, 14 - role.length))}
-							{status.label.padEnd(11)}
-							{status.task ? status.task.title : ''}
-							<Text color={theme.muted}>{status.since ? `  ${formatElapsed(Date.now() - status.since)}` : ''}</Text>
-						</Text>
-					);
-				})}
+	let body: ReactNode;
+	if (palette) {
+		body = <Palette items={paletteItems()} width={width} height={bodyRows} onClose={() => setPalette(false)} />;
+	} else if (panel) {
+		body = (
+			<Box flexDirection="column" height={bodyRows} overflow="hidden">
+				{panel === 'cost' ? <CostPanel run={run} who={who} width={width} /> : <MergePanel run={run} who={who} width={width} />}
 			</Box>
-
-			<Box marginTop={1} flexDirection="column" flexShrink={0}>
-				<Text color={theme.muted}>── {agentEmployee?.name ?? 'Orchestrator'} ──</Text>
-				{tail.length ? tail.map(r => <Text key={r.key} wrap="truncate">{r.node}</Text>) : <Text color={theme.muted}>Nothing yet.</Text>}
-			</Box>
-
-			<Box marginTop={1} flexDirection="column" flexShrink={0}>
-				{finished ? (
-					<>
-						<Text>
-							{state.status === 'done' ? <Text color={theme.ok}>{icons.ok} Done</Text> : state.status === 'failed' ? <Text color={theme.fail}>{icons.fail} Failed</Text> : <Text color={theme.muted}>⊘ Stopped</Text>}
-							<Text color={theme.muted}> after {elapsed}</Text>
-						</Text>
-						{state.summary ? <Paragraph>{state.summary}</Paragraph> : null}
-					</>
-				) : (
+		);
+	} else if (view.name === 'tasks') {
+		body = (
+			<>
+				<TasksView run={run} who={who} row={view.row} width={width} height={bodyRows - promptRows} now={now} />
+				{prompt}
+			</>
+		);
+	} else if (view.name === 'focus') {
+		const side = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, sidebar));
+		const useSide = width >= 76;
+		const mainWidth = useSide ? width - side - 1 : width;
+		const height = bodyRows - promptRows - (typing ? 0 : 0);
+		body = (
+			<>
+				<Box height={height}>
+					{useSide ? (
+						<>
+							<Sidebar run={run} who={who} selected={view.agent} width={side} height={height} now={now} />
+							<Box width={1} flexShrink={0}>
+								<Text color={theme.rule}>{Array.from({length: height}, () => '│').join('\n')}</Text>
+							</Box>
+						</>
+					) : null}
+					<FocusMain run={run} who={who} agent={view.agent} tab={view.tab} offset={offset} details={details} width={mainWidth - (useSide ? 1 : 0)} height={height} now={now} />
+				</Box>
+				{prompt}
+			</>
+		);
+	} else {
+		const shownLanes = Math.max(2, Math.min(lanes.length, bodyRows - 12));
+		const headerRows = 2 + (finished && state.summary ? Math.min(5, state.summary.split('\n').length + 1) : 0);
+		const feedHeight = Math.max(3, bodyRows - headerRows - 1 - shownLanes - (lanes.length > shownLanes ? 1 : 0) - 1 - promptRows);
+		const status = finished ? state.status : interrupted ? 'interrupted' : state.paused ? 'paused' : undefined;
+		body = (
+			<>
+				<Box flexDirection="column" flexShrink={0}>
 					<Text wrap="truncate">
-						<Text color={theme.muted}>TASKS </Text>
-						{state.tasks.length === 0 ? <Text color={theme.muted}>planning…</Text> : null}
-						{state.tasks.map(t => (
-							<Text key={t.id}>
-								{' '}
-								{TASK_ICON[t.status]} {t.id}
-							</Text>
-						))}
+						<Text color={theme.accent} bold>
+							◆
+						</Text>{' '}
+						<Text color={theme.strong} bold>
+							{state.request.replace(/\s+/g, ' ')}
+						</Text>
 					</Text>
-				)}
-			</Box>
+					<Box paddingLeft={2}>
+						<Bar width={Math.min(40, Math.max(12, Math.floor(width / 3)))} fraction={finished && state.status === 'done' ? 1 : progress.fraction} color={theme.accent} />
+						<Text wrap="truncate">
+							{' '}
+							<Text color={theme.text}>
+								{progress.done}/{progress.total || '–'}
+							</Text>
+							<Text color={theme.dim}>
+								{status ? ` · ${status}` : ''}
+								{eta !== undefined ? ` · eta ~${formatSpan(eta)}` : ''}
+								{state.costUsd > 0 ? ` · $${state.costUsd.toFixed(2)}` : ''}
+								{state.tokens > 0 ? ` · ${formatTokens(state.tokens)} tok` : ''} · {elapsed}
+							</Text>
+						</Text>
+					</Box>
+					{finished && state.summary ? (
+						<Box paddingLeft={2} marginTop={0}>
+							<Paragraph color={theme.soft}>{excerpt(state.summary, 360)}</Paragraph>
+						</Box>
+					) : null}
+				</Box>
+				<Box flexDirection="column" marginTop={1} flexShrink={0}>
+					{lanes.slice(0, shownLanes).map((lane, i) => (
+						<LaneRow key={lane.agent} index={i} lane={lane} run={run} who={who} width={width} selected={false} needsYou={needsYou(lane.agent)} now={now} />
+					))}
+					{lanes.length > shownLanes ? <Text color={theme.dim}>{`  +${lanes.length - shownLanes} more: ^k to open one`}</Text> : null}
+				</Box>
+				<Box marginTop={1} flexDirection="column" flexShrink={0}>
+					<FeedView layout={layout} selected={selectedEvent} height={feedHeight} />
+				</Box>
+				<Box flexGrow={1} />
+				{prompt}
+			</>
+		);
+	}
 
-			<Box flexGrow={1} />
-			<Text color={theme.border}>{'─'.repeat(width)}</Text>
-			{input}
-		</Frame>
+	return (
+		<Canvas hints={hints} rightHints={rightHints} notice={notices.length ? notices : undefined}>
+			{body}
+		</Canvas>
 	);
-}
-
-function clip(text: string, lines: number, width: number): string {
-	const all = text.split('\n').flatMap(l => (l.length > width ? l.match(new RegExp(`.{1,${width}}`, 'g')) ?? [l] : [l]));
-	return all.length > lines ? `${all.slice(0, lines).join('\n')}\n…` : text;
 }

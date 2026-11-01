@@ -161,3 +161,35 @@ export function eventsSince(events: RunEvent[], since: number): RunEvent[] {
 export function compactEvents(events: RunEvent[], max = 500): RunEvent[] {
 	return events.length > max ? events.slice(events.length - max) : events;
 }
+
+export type LaneKind = 'working' | 'waiting' | 'queued' | 'idle' | 'done' | 'stuck' | 'attention';
+
+export interface LaneState {
+	kind: LaneKind;
+	task?: Task;
+	/** What they are doing right now (working). */
+	activity?: Activity;
+	/** Who a waiting employee is waiting for: the assignee of the first unfinished dependency. */
+	on?: string;
+	since?: number;
+}
+
+/** What one employee is up to, from their tasks and their latest transcript entries. */
+export function laneState(employeeId: string, tasks: Task[], log: ChatEntry[], needsYou = false): LaneState {
+	const mine = tasks.filter(t => t.assignee === employeeId && t.status !== 'cancelled');
+	const running = mine.find(t => t.status === 'running');
+	if (running && needsYou) return {kind: 'attention', task: running, since: running.startedAt, activity: laneActivity(log)};
+	if (running) return {kind: 'working', task: running, since: running.startedAt, activity: laneActivity(log)};
+
+	const waiting = mine.find(t => t.status === 'ready' || t.status === 'blocked');
+	if (waiting) {
+		if (waiting.status === 'ready') return {kind: 'queued', task: waiting};
+		const blocker = waiting.dependsOn.map(id => tasks.find(t => t.id === id)).find(t => t && t.status !== 'done');
+		return {kind: 'waiting', task: waiting, on: blocker?.assignee};
+	}
+
+	const last = mine.at(-1);
+	if (last?.status === 'failed') return {kind: 'stuck', task: last};
+	if (last?.status === 'done') return {kind: 'done', task: last};
+	return {kind: 'idle'};
+}

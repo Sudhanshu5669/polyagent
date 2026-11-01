@@ -3,7 +3,7 @@ import {theme} from '../theme.js';
 
 const FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
-export function Spinner() {
+export function Spinner({color = theme.accent}: {color?: string}) {
 	const {frame} = useAnimation({interval: 80});
-	return <Text color={theme.accent}>{FRAMES[frame % FRAMES.length]}</Text>;
+	return <Text color={color}>{FRAMES[frame % FRAMES.length]}</Text>;
 }
