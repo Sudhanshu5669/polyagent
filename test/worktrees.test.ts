@@ -53,8 +53,9 @@ describe('WorktreeIsolation', () => {
 		fs.writeFileSync(path.join(maya.cwd, 'api.ts'), 'export const api = 1;\n');
 		fs.writeFileSync(path.join(leo.cwd, 'b.txt'), 'bee, rewritten by leo\n');
 
-		expect(await iso.finish('maya', 'api', maya.start)).toEqual({files: ['api.ts']});
-		expect(await iso.finish('leo', 'ui', leo.start)).toEqual({files: ['b.txt']});
+		const api = await iso.finish('maya', 'api', maya.start);
+		expect(api).toEqual({files: ['api.ts'], patch: expect.stringContaining('diff --git a/api.ts b/api.ts')});
+		expect(await iso.finish('leo', 'ui', leo.start)).toEqual({files: ['b.txt'], patch: expect.stringContaining('b.txt')});
 		expect(read(root, 'api.ts')).toBe('export const api = 1;\n');
 		expect(read(root, 'b.txt')).toBe('bee, rewritten by leo\n');
 		// Both tasks are in the run's history, reachable from its ref.
@@ -74,7 +75,7 @@ describe('WorktreeIsolation', () => {
 		fs.writeFileSync(path.join(leo.cwd, 'a.txt'), 'one\nTWO by leo\nthree\n');
 
 		await iso.finish('maya', 'm', maya.start);
-		expect(await iso.finish('leo', 'l', leo.start)).toEqual({files: ['a.txt'], conflicts: ['a.txt']});
+		expect(await iso.finish('leo', 'l', leo.start)).toEqual({files: ['a.txt'], conflicts: ['a.txt'], patch: expect.stringContaining('a.txt')});
 		expect(read(root, 'a.txt')).toBe('one\nTWO by maya\nthree\n');
 	});
 
@@ -85,7 +86,7 @@ describe('WorktreeIsolation', () => {
 		fs.writeFileSync(path.join(maya.cwd, 'a.txt'), 'one\ntwo by maya\nthree\n');
 		fs.writeFileSync(path.join(root, 'a.txt'), 'one\ntwo by me, meanwhile\nthree\n');
 
-		expect(await iso.finish('maya', 'm', maya.start)).toEqual({files: ['a.txt'], unapplied: ['a.txt']});
+		expect(await iso.finish('maya', 'm', maya.start)).toEqual({files: ['a.txt'], unapplied: ['a.txt'], patch: expect.stringContaining('a.txt')});
 		expect(read(root, 'a.txt')).toContain('by me, meanwhile');
 		// The merged version is still recoverable from the run ref.
 		expect(git(root, 'show', `${iso.ref}:a.txt`)).toContain('two by maya');

@@ -1,5 +1,5 @@
-import {Box, Text} from 'ink';
-import {useEffect, useState, type ReactNode} from 'react';
+import {Box, Text, type DOMElement} from 'ink';
+import {useEffect, useState, type ReactNode, type Ref} from 'react';
 import {PROVIDERS} from '../../core/providers.js';
 import type {RunEngine} from '../../core/run/engine.js';
 import {diffStats, formatSpan, formatTokens, isTestRun, laneProgress, laneState, parseTestCounts} from '../../core/run/progress.js';
@@ -183,11 +183,22 @@ interface FocusProps {
 	width: number;
 	height: number;
 	now: number;
+	tabsRef?: Ref<DOMElement>;
 }
 
-export function TabBar({agent, tab}: {agent: string; tab: Tab}) {
+/** Where each tab label sits, as offsets from the left edge of the bar, for clicks. */
+export function tabOffsets(agent: string): {tab: Tab; start: number; end: number}[] {
+	let at = 0;
+	return tabsFor(agent).map(tab => {
+		const start = at + 1; // each tab has one column of margin before it
+		at = start + tab.length + 2;
+		return {tab, start, end: at};
+	});
+}
+
+export function TabBar({agent, tab, barRef}: {agent: string; tab: Tab; barRef?: Ref<DOMElement>}) {
 	return (
-		<Box>
+		<Box ref={barRef}>
 			{tabsFor(agent).map(t => (
 				<Box key={t} marginLeft={1}>
 					<Text backgroundColor={t === tab ? theme.rule : undefined} color={t === tab ? theme.strong : theme.dim}>
@@ -236,7 +247,7 @@ export function useTabRows(run: RunEngine, agent: string, tab: Tab, width: numbe
 	}
 }
 
-export function FocusMain({run, who, agent, tab, offset, details, width, height, now}: FocusProps) {
+export function FocusMain({run, who, agent, tab, offset, details, width, height, now, tabsRef}: FocusProps) {
 	const w = who(agent);
 	const employee = run.employees.find(e => e.id === agent);
 	const task = employee ? (run.state.tasks.filter(t => t.assignee === agent).find(t => t.status === 'running') ?? run.state.tasks.filter(t => t.assignee === agent).at(-1)) : undefined;
@@ -262,7 +273,7 @@ export function FocusMain({run, who, agent, tab, offset, details, width, height,
 						</Text>
 					</Text>
 				</Box>
-				<TabBar agent={agent} tab={tab} />
+				<TabBar agent={agent} tab={tab} barRef={tabsRef} />
 			</Box>
 			<Text wrap="truncate" color={theme.strong}>
 				{task ? task.title : employee ? 'No task in this run' : state(run)}

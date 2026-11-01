@@ -1,5 +1,5 @@
 import {Box, Text} from 'ink';
-import {useRef, type ReactNode} from 'react';
+import {useRef, type MutableRefObject, type ReactNode} from 'react';
 import {formatSpan} from '../../core/run/progress.js';
 import type {RunEvent} from '../../core/run/types.js';
 import {wrapText} from '../components/Transcript.js';
@@ -198,7 +198,7 @@ export function buildFeed({events, who, width, selected, expanded, awaySince, no
 }
 
 /** Shows a window of rows and keeps the selected event inside it. */
-export function FeedView({layout, selected, height}: {layout: FeedLayout; selected?: number; height: number}) {
+export function FeedView({layout, selected, height, hit}: {layout: FeedLayout; selected?: number; height: number; hit?: MutableRefObject<(row: number) => number | undefined>}) {
 	const top = useRef(0);
 	const total = layout.rows.length;
 	const span = selected === undefined ? undefined : layout.spans.get(selected);
@@ -210,6 +210,8 @@ export function FeedView({layout, selected, height}: {layout: FeedLayout; select
 
 	at = Math.max(0, Math.min(at, Math.max(0, total - height)));
 	top.current = at;
+	// Which event is on a screen row of the feed, for clicks.
+	if (hit) hit.current = row => layout.rows[at + row]?.eventId;
 	return (
 		<Box flexDirection="column" height={height} overflow="hidden">
 			{layout.rows.slice(at, at + height).map(row => (

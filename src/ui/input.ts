@@ -1,5 +1,6 @@
 import {useInput, usePaste} from 'ink';
 import {createContext, useContext} from 'react';
+import {MOUSE_INPUT} from './mouse.js';
 
 /**
  * Whether the current screen may read the keyboard. A modal (like an approval prompt) closes the gate
@@ -10,10 +11,16 @@ export const InputGate = createContext(true);
 type InputHandler = Parameters<typeof useInput>[0];
 type PasteHandler = Parameters<typeof usePaste>[0];
 
-/** useInput, but silent while the gate is closed. */
+/** useInput, but silent while the gate is closed, and deaf to mouse reports (those go through useMouse). */
 export function useKeys(handler: InputHandler, options: {isActive?: boolean} = {}): void {
 	const open = useContext(InputGate);
-	useInput(handler, {isActive: open && (options.isActive ?? true)});
+	useInput(
+		(input, key) => {
+			if (MOUSE_INPUT.test(input)) return;
+			handler(input, key);
+		},
+		{isActive: open && (options.isActive ?? true)},
+	);
 }
 
 /** usePaste, but silent while the gate is closed. */

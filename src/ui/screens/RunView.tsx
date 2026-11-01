@@ -1,7 +1,7 @@
-import {Box, Text, useAnimation, useWindowSize} from 'ink';
-import {useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode} from 'react';
+import {Box, measureElement, Text, useAnimation, useWindowSize, type DOMElement} from 'ink';
+import {useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject} from 'react';
 import type {Employee} from '../../core/employees.js';
-import {COMMANDS, parseInput} from '../../core/run/input.js';
+import {COMMANDS, parseInput, suggest} from '../../core/run/input.js';
 import type {RunEngine} from '../../core/run/engine.js';
 import {estimateEta, excerpt, formatClock, formatSpan, formatTokens, runProgress} from '../../core/run/progress.js';
 import {isFinished, ORCHESTRATOR} from '../../core/run/types.js';
@@ -9,7 +9,8 @@ import {Paragraph} from '../components/Paragraph.js';
 import {usePendingApprovals} from '../approvalsContext.js';
 import {useKeys} from '../input.js';
 import {buildFeed, FeedView} from '../run/Feed.js';
-import {FocusMain, Sidebar, SIDEBAR_MAX, SIDEBAR_MIN, tabsFor, type Tab} from '../run/Focus.js';
+import {useMouse} from '../mouse.js';
+import {FocusMain, Sidebar, SIDEBAR_MAX, SIDEBAR_MIN, tabOffsets, tabsFor, type Tab} from '../run/Focus.js';
 import {LaneRow, lanesFor} from '../run/Lanes.js';
 import {Palette, type PaletteItem} from '../run/Palette.js';
 import {CostPanel, MergePanel} from '../run/Panels.js';
@@ -60,6 +61,17 @@ export function RunView({run, onBack, onContinue, onHire, onFire}: Props) {
 	const [details, setDetails] = useState(false);
 	const [sidebar, setSidebar] = useState(26);
 	const [notice, setNotice] = useState<string>();
+	const [draft, setDraft] = useState('');
+
+	// Where things are on screen, for the mouse.
+	const lanesRef = useRef<DOMElement>(null);
+	const feedRef = useRef<DOMElement>(null);
+	const promptRef = useRef<DOMElement>(null);
+	const sidebarRef = useRef<DOMElement>(null);
+	const dividerRef = useRef<DOMElement>(null);
+	const tabsRef = useRef<DOMElement>(null);
+	const feedHit = useRef<(row: number) => number | undefined>(() => undefined);
+	const dragging = useRef(false);
 
 	// "While you were away": since the last time anyone looked at this run.
 	const [awaySince, setAwaySince] = useState<number | undefined>(() => {
@@ -125,6 +137,7 @@ export function RunView({run, onBack, onContinue, onHire, onFire}: Props) {
 
 	const startTyping = (initial = '') => {
 		setInitialText(initial);
+		setDraft(initial);
 		setTypingKey(k => k + 1);
 		setTyping(true);
 	};
@@ -293,6 +306,88 @@ export function RunView({run, onBack, onContinue, onHire, onFire}: Props) {
 		if (printable) return startTyping(input);
 	});
 
+	// Mouse -------------------------------------------------------------------
+	const rect = (ref: RefObject<DOMElement | null>) => (ref.current ? measureElement(ref.current) : undefined);
+	const inside = (r: ReturnType<typeof rect>, e: {x: number; y: number}) => r !== undefined && e.x >= r.x && e.x < r.x + r.width && e.y >= r.y && e.y < r.y + r.height;
+	useMouse(e => {
+		lastKey.current = Date.now();
+		if (palette) return;
+		const wheel = e.kind === 'wheel-up' ? -1 : e.kind === 'wheel-down' ? 1 : 0;
+		if (panel) return;
+
+		if (wheel) {
+			if (view.name === 'briefing') return moveEvent(wheel * 2);
+			if (view.name === 'tasks') return setView({name: 'tasks', row: Math.max(0, Math.min(state.tasks.length - 1, view.row + wheel))});
+			// Streams stick to the bottom (up = older); a diff reads from the top (down = further in).
+			const towardsMore = view.tab === 'diff' ? wheel : -wheel;
+			return setOffset(o => Math.max(0, o + towardsMore * 3));
+		}
+
+		if (e.kind === 'up') {
+			dragging.current = false;
+			return;
+		}
+
+		if (e.kind === 'drag') {
+			const side = rect(sidebarRef);
+			if (dragging.current && side) setSidebar(Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, e.x - side.x)));
+			return;
+		}
+
+		if (e.kind !== 'down' || e.button !== 0) return;
+
+		// Clicking the prompt starts typing; clicking anywhere else while typing just leaves the prompt alone.
+		if (inside(rect(promptRef), e)) return typing ? undefined : startTyping();
+		if (typing) return;
+
+		if (view.name === 'briefing') {
+			const lanesRect = rect(lanesRef);
+			if (lanesRect && inside(lanesRect, e)) {
+				const agent = agentAt(e.y - lanesRect.y);
+				return agent ? openAgent(agent) : undefined;
+			}
+
+			const feedRect = rect(feedRef);
+			if (feedRect && inside(feedRect, e)) {
+				const id = feedHit.current(e.y - feedRect.y);
+				if (id === undefined) return;
+				if (id === selectedEvent) toggleExpanded(id);
+				else setSelectedEvent(id);
+			}
+
+			return;
+		}
+
+		if (view.name === 'focus') {
+			const side = rect(sidebarRef);
+			const divider = rect(dividerRef);
+			if (divider && e.y >= divider.y && e.y < divider.y + divider.height && Math.abs(e.x - divider.x) <= 1) {
+				dragging.current = true;
+				return;
+			}
+
+			if (side && inside(side, e)) {
+				// "EMPLOYEES" heading, then two rows per agent.
+				const agent = agentAt(Math.floor((e.y - side.y - 1) / 2));
+				if (agent) {
+					setOffset(0);
+					setView({name: 'focus', agent, tab: tabsFor(agent).includes(view.tab) ? view.tab : 'stream'});
+				}
+
+				return;
+			}
+
+			const bar = rect(tabsRef);
+			if (bar && e.y === bar.y && e.x >= bar.x) {
+				const hit = tabOffsets(view.agent).find(t => e.x - bar.x >= t.start && e.x - bar.x < t.end);
+				if (hit) {
+					setOffset(0);
+					setView({...view, tab: hit.tab});
+				}
+			}
+		}
+	});
+
 	// Layout ------------------------------------------------------------------
 	const progress = runProgress(state);
 	const eta = !finished && !state.paused && !interrupted ? estimateEta(state, now) : undefined;
@@ -344,21 +439,28 @@ export function RunView({run, onBack, onContinue, onHire, onFire}: Props) {
 	}
 
 	const bodyRows = rows - 2 - notices.length; // top padding + hint line
-	const promptRows = 3;
+	// The box, plus the suggestions that appear above it while typing @ or /.
+	const promptRows = 3 + (typing ? suggest(draft, run.employees).slice(0, 5).length : 0);
 
 	const prompt = (
-		<Prompt
-			key={typingKey}
-			typing={typing}
-			employees={run.employees}
-			target={target}
-			width={width}
-			initial={initialText}
-			placeholder={focusEmployee ? `message ${focusEmployee.name}, or @ someone else…` : 'tell the orchestrator what to change, @ an employee, or / for commands'}
-			onSubmit={submit}
-			onExit={() => setTyping(false)}
-			disabled={finished ? 'This run has ended.' : interrupted ? 'This run was interrupted. Press ^r to continue it.' : undefined}
-		/>
+		<Box ref={promptRef} flexDirection="column" flexShrink={0}>
+			<Prompt
+				key={typingKey}
+				typing={typing}
+				employees={run.employees}
+				target={target}
+				width={width}
+				initial={initialText}
+				placeholder={focusEmployee ? `message ${focusEmployee.name}, or @ someone else…` : 'tell the orchestrator what to change, @ an employee, or / for commands'}
+				onSubmit={submit}
+				onDraft={setDraft}
+				onExit={() => {
+					setTyping(false);
+					setDraft('');
+				}}
+				disabled={finished ? 'This run has ended.' : interrupted ? 'This run was interrupted. Press ^r to continue it.' : undefined}
+			/>
+		</Box>
 	);
 
 	let body: ReactNode;
@@ -387,13 +489,15 @@ export function RunView({run, onBack, onContinue, onHire, onFire}: Props) {
 				<Box height={height}>
 					{useSide ? (
 						<>
-							<Sidebar run={run} who={who} selected={view.agent} width={side} height={height} now={now} />
-							<Box width={1} flexShrink={0}>
+							<Box ref={sidebarRef} flexShrink={0}>
+								<Sidebar run={run} who={who} selected={view.agent} width={side} height={height} now={now} />
+							</Box>
+							<Box ref={dividerRef} width={1} flexShrink={0}>
 								<Text color={theme.rule}>{Array.from({length: height}, () => '│').join('\n')}</Text>
 							</Box>
 						</>
 					) : null}
-					<FocusMain run={run} who={who} agent={view.agent} tab={view.tab} offset={offset} details={details} width={mainWidth - (useSide ? 1 : 0)} height={height} now={now} />
+					<FocusMain run={run} who={who} agent={view.agent} tab={view.tab} offset={offset} details={details} width={mainWidth - (useSide ? 1 : 0)} height={height} now={now} tabsRef={tabsRef} />
 				</Box>
 				{prompt}
 			</>
@@ -435,14 +539,14 @@ export function RunView({run, onBack, onContinue, onHire, onFire}: Props) {
 						</Box>
 					) : null}
 				</Box>
-				<Box flexDirection="column" marginTop={1} flexShrink={0}>
+				<Box ref={lanesRef} flexDirection="column" marginTop={1} flexShrink={0}>
 					{lanes.slice(0, shownLanes).map((lane, i) => (
 						<LaneRow key={lane.agent} index={i} lane={lane} run={run} who={who} width={width} selected={false} needsYou={needsYou(lane.agent)} now={now} />
 					))}
 					{lanes.length > shownLanes ? <Text color={theme.dim}>{`  +${lanes.length - shownLanes} more: ^k to open one`}</Text> : null}
 				</Box>
-				<Box marginTop={1} flexDirection="column" flexShrink={0}>
-					<FeedView layout={layout} selected={selectedEvent} height={feedHeight} />
+				<Box ref={feedRef} marginTop={1} flexDirection="column" flexShrink={0}>
+					<FeedView layout={layout} selected={selectedEvent} height={feedHeight} hit={feedHit} />
 				</Box>
 				<Box flexGrow={1} />
 				{prompt}

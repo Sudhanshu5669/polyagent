@@ -112,7 +112,33 @@ When a run starts, polyagent snapshots your working tree exactly as it is (uncom
 - **Task time limit** stops a task that runs too long and reports it to the orchestrator as failed.
 - Every run is listed on the dashboard; select one and press `⏎` to open it. A run that was interrupted (polyagent quit or crashed) can be continued with `ctrl+r`: tasks that were in flight start again, everything already merged stays, and the orchestrator is told what happened. Worktrees left behind by a crash are cleaned up automatically, never while another polyagent is still using them.
 
-The run screen lists the orchestrator and every employee with their role, status and current task. `⏎` watches one agent's live output (`tab` for the next), `ctrl+t` shows the task list with briefs and reports, and anything you type goes to the orchestrator. `ctrl+c` stops the run. Changes stay uncommitted on your current branch for you to review. Each run is saved to `.polyagent/runs/<id>/run.json`.
+Changes stay uncommitted on your current branch for you to review. `ctrl+c` stops the run. Each run is saved to `.polyagent/runs/<id>/run.json`.
+
+#### The run screen
+
+The run screen is built for coming back to a run later and asking "what happened, and do I need to step in?".
+
+- **Header**: the request, a progress bar, tasks done, a rough ETA (once a task has finished), spend, tokens and elapsed time.
+- **Lanes**: one line per agent, numbered `0` (the orchestrator) and `1`–`9`. Each shows a hue and glyph, role, a progress bar, and what they're doing now: `●` working (`⠹` while a tool runs), `◌` waiting on a teammate or queued, `○` idle, `✓` done, a red `!` when stuck, and `⚑` when they need your approval. Glyph and name always appear together, so colour is never the only cue.
+- **Feed**: the story of the run, newest first: the plan, handoffs (with the message that was passed on), merges, conflicts, revisions, re-plans, your messages and hires. When you return after a minute or more, it opens with **While you were away**. `⏎` expands an event.
+- **Focus view**: press a lane's number (or click it) to open one agent with a roster beside them and four tabs: `stream` (what they're doing), `diff` (their changes, live while they work), `tests` (test runs and counts) and `chat` (what you and they have said). `j`/`k` switch agent, `tab` switches tab, `esc` goes back.
+
+| Key | Does |
+| --- | --- |
+| `j` `k` `g` `G` | Move through the feed |
+| `1`–`9`, `0` | Open an employee, or the orchestrator |
+| `⏎` | Expand the selected event (or start the plan, when it needs approval) |
+| `i`, or just start typing | Type to the orchestrator (to the employee you're watching, in the focus view) |
+| `esc` | Leave the prompt for normal mode; in normal mode, go back |
+| `q` | Detach to the dashboard; the run keeps going |
+| `ctrl+k` | Palette: fuzzy search over employees, tasks, events and commands |
+| `ctrl+t`, `ctrl+p`, `ctrl+r`, `ctrl+o` | Task list, pause or resume, continue an interrupted run, show thinking and tool output |
+
+The prompt takes plain text (to the orchestrator, who re-plans), `@name message` (to one employee: it goes into their next task, and the orchestrator is told), and `/commands`: `/hire`, `/fire <name>`, `/merge` (what each worktree changed and where it went), `/cost` (spend per employee and task), `/tasks`, `/pause`, `/resume` and `/stop`. Hiring or firing mid-run tells the orchestrator; someone with unfinished work stays until it's done.
+
+**Mouse**: click a lane or a feed event (click again to expand), scroll the feed or a stream with the wheel, click a tab, and drag the divider beside the roster to resize it. Mouse capture means your terminal's own text selection needs <kbd>Shift</kbd> held (or <kbd>Option</kbd> on macOS); set `POLYAGENT_MOUSE=0` to turn the mouse off.
+
+**Colours** follow your terminal: polyagent asks for its background colour at startup and switches to a light palette on light terminals. Set `POLYAGENT_THEME=light` or `dark` to force it. `NO_COLOR` is respected.
 
 ### Commands
 

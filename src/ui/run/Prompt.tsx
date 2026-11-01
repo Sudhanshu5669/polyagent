@@ -16,6 +16,8 @@ interface Props {
 	/** Text to start with, e.g. "@" or "/". */
 	initial?: string;
 	onSubmit: (text: string) => void;
+	/** Every change to what is typed, so the screen can leave room for the suggestions. */
+	onDraft?: (text: string) => void;
 	/** esc: back to normal mode. */
 	onExit: () => void;
 	width: number;
@@ -24,7 +26,7 @@ interface Props {
 }
 
 /** The one prompt: plain text, @employee, /command. Normal mode shows it at rest; insert mode takes input. */
-export function Prompt({typing, employees, target, placeholder, initial = '', onSubmit, onExit, width, disabled}: Props) {
+export function Prompt({typing, employees, target, placeholder, initial = '', onSubmit, onDraft, onExit, width, disabled}: Props) {
 	const [draft, setDraft] = useState(initial);
 	const active = typing && !disabled;
 	const suggestions = active ? suggest(draft, employees).slice(0, 5) : [];
@@ -51,9 +53,13 @@ export function Prompt({typing, employees, target, placeholder, initial = '', on
 						prompt={prompt}
 						promptColor={target.color}
 						placeholder={placeholder}
-						onChange={setDraft}
+						onChange={text => {
+							setDraft(text);
+							onDraft?.(text);
+						}}
 						onSubmit={text => {
 							setDraft('');
+							onDraft?.('');
 							onSubmit(text);
 						}}
 						onCancel={onExit}

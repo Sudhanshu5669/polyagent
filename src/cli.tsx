@@ -46,7 +46,8 @@ ${s.bold('Options')}
   -h, --help     show this help
   -v, --version  show the version
 
-Respects NO_COLOR. Global config lives in ~/.config/polyagent (or $POLYAGENT_HOME).`;
+Respects NO_COLOR. POLYAGENT_THEME=light|dark overrides the detected terminal background and
+POLYAGENT_MOUSE=0 turns the mouse off. Global config lives in ~/.config/polyagent (or $POLYAGENT_HOME).`;
 
 function version(): string {
 	const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {version: string};
