@@ -82,9 +82,20 @@ export async function sweepAbandoned(root: string, repoCache: string): Promise<v
 	await git(root, ['worktree', 'prune'], {allowFail: true});
 }
 
+const MAX_PATCH = 40_000;
+
+/** Patches are kept in the run file, so a huge one is cut at a file boundary. */
+export function capPatch(patch: string): string {
+	if (patch.length <= MAX_PATCH) return patch;
+	const cut = patch.lastIndexOf('\ndiff --git ', MAX_PATCH);
+	return `${patch.slice(0, cut > 0 ? cut : MAX_PATCH)}\n… diff truncated\n`;
+}
+
 export interface TaskMerge {
 	/** Files the task changed. */
 	files: string[];
+	/** The task's own changes as a unified diff (capped). */
+	patch?: string;
 	/** Set when the task's changes clash with work already merged; nothing was applied. */
 	conflicts?: string[];
 	/** Files merged into the run but not written to your working tree, because you changed them meanwhile. */
@@ -208,13 +219,14 @@ export class WorktreeIsolation {
 			await git(cwd, [...NO_SIGN, 'commit', '--quiet', '--no-verify', '-m', `polyagent: ${taskId}`], {env: this.env});
 			const commit = (await git(cwd, ['rev-parse', 'HEAD'])).stdout;
 			const files = (await git(cwd, ['diff', '--name-only', start, commit])).stdout.split('\n').filter(Boolean);
+			const taskPatch = capPatch((await git(cwd, ['diff', '--no-color', start, commit], {raw: true, allowFail: true})).stdout);
 
 			let tree: string;
 			if (start === this.head) {
 				tree = (await git(cwd, ['rev-parse', `${commit}^{tree}`])).stdout;
 			} else {
 				const merge = await git(this.root, ['merge-tree', '--write-tree', '--name-only', '--no-messages', '--merge-base', start, this.head, commit], {allowFail: true});
-				if (merge.code === 1) return {files, conflicts: merge.stdout.split('\n').slice(1).filter(Boolean)};
+				if (merge.code === 1) return {files, patch: taskPatch, conflicts: merge.stdout.split('\n').slice(1).filter(Boolean)};
 				if (merge.code !== 0) throw new Error(`git merge-tree failed: ${merge.stderr}`);
 				tree = merge.stdout.split('\n')[0]!;
 			}
@@ -225,10 +237,25 @@ export class WorktreeIsolation {
 
 			// Bring the user's working tree along. If they changed the same files meanwhile, leave those alone.
 			const patch = await git(this.root, ['diff', '--binary', previous, this.head], {raw: true});
-			if (!patch.stdout.trim()) return {files};
+			if (!patch.stdout.trim()) return {files, patch: taskPatch};
 			const applied = await git(this.root, ['apply', '--whitespace=nowarn', '-'], {input: patch.stdout, allowFail: true});
-			if (applied.code === 0) return {files};
-			return {files, unapplied: (await git(this.root, ['diff', '--name-only', previous, this.head])).stdout.split('\n').filter(Boolean)};
+			if (applied.code === 0) return {files, patch: taskPatch};
+			return {files, patch: taskPatch, unapplied: (await git(this.root, ['diff', '--name-only', previous, this.head])).stdout.split('\n').filter(Boolean)};
+		});
+	}
+
+	/**
+	 * What an employee has changed in their worktree so far, for watching work in progress.
+	 * New files are included. Undefined when they have no worktree yet.
+	 */
+	liveDiff(employeeId: string): Promise<string | undefined> {
+		return this.locked(async () => {
+			const cwd = this.worktrees.get(employeeId);
+			if (!cwd) return undefined;
+			// Intent-to-add makes new files show up in the diff; the task's own commit adds everything anyway.
+			await git(cwd, ['add', '-A', '-N', '--', '.', EXCLUDE_WORKSPACE, ...LINKED_DIRS.map(d => `:(exclude)${d}`)], {allowFail: true});
+			const diff = await git(cwd, ['diff', '--no-color', 'HEAD'], {raw: true, allowFail: true});
+			return capPatch(diff.stdout);
 		});
 	}
 

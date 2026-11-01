@@ -19,7 +19,8 @@ import {
 	type Decision,
 	type Update,
 } from './orchestrator.js';
-import {isFinished, ORCHESTRATOR, type RunFile, type RunState, type RunStatus, type Task, type TaskStatus} from './types.js';
+import {compactEvents, excerpt} from './progress.js';
+import {isFinished, ORCHESTRATOR, type RunEvent, type RunEventKind, type RunFile, type RunState, type RunStatus, type Task, type TaskStatus} from './types.js';
 
 export interface EngineOptions {
 	workspaceDir: string;
@@ -91,6 +92,10 @@ export class RunEngine {
 	private iso?: WorktreeIsolation;
 	/** Spend at which the run pauses next; raised by one budget each time the user resumes. */
 	private budgetLimit: number;
+	/** Messages you sent an employee directly; they go into that employee's next task. */
+	private readonly messages = new Map<string, string[]>();
+	/** When someone last looked at this run, so the screen can say what happened in the meantime. */
+	lastViewedAt?: number;
 
 	constructor(
 		private readonly options: EngineOptions,
@@ -106,6 +111,8 @@ export class RunEngine {
 			tasks: [],
 			employeeSessions: {},
 			costUsd: 0,
+			tokens: 0,
+			events: [],
 			unapplied: [],
 		};
 		this.done = new Promise(resolve => (this.resolveDone = resolve));
@@ -161,7 +168,7 @@ export class RunEngine {
 	/** Rebuild a run from its saved file: to look at a past run, or to continue one that was interrupted. */
 	static restore(options: EngineOptions, file: RunFile): RunEngine {
 		const engine = new RunEngine(options, file.state.request);
-		Object.assign(engine.state, file.state, {unapplied: file.state.unapplied ?? []});
+		Object.assign(engine.state, file.state, {unapplied: file.state.unapplied ?? [], events: file.state.events ?? [], tokens: file.state.tokens ?? 0});
 		engine.logs = {[ORCHESTRATOR]: [], ...file.logs};
 		engine.budgetLimit = options.runBudget ? file.state.costUsd + options.runBudget : Number.POSITIVE_INFINITY;
 		if (isFinished(file.state.status)) engine.resolveDone();
@@ -210,12 +217,70 @@ export class RunEngine {
 		this.pump();
 	}
 
+	/** Record something worth telling someone who wasn't watching. */
+	private emit(kind: RunEventKind, agent: string, text: string, extra: {to?: string; detail?: string; taskId?: string} = {}): void {
+		const {events} = this.state;
+		const id = (events.at(-1)?.id ?? 0) + 1;
+		events.push({id, at: Date.now(), kind, agent, text, ...extra});
+		if (events.length > 600) this.state.events = compactEvents(events);
+	}
+
+	private name(id: string): string {
+		return this.options.employees.find(e => e.id === id)?.name ?? id;
+	}
+
 	/** Pass a message to the orchestrator; it is delivered on its next turn. */
 	tell(text: string): void {
 		if (isFinished(this.state.status)) return;
 		this.log(ORCHESTRATOR).push({kind: 'user', text, at: Date.now()});
 		this.updates.push({kind: 'user', text});
+		this.emit('user', 'user', excerpt(text, 120), {to: ORCHESTRATOR, detail: text});
 		this.pump();
+	}
+
+	/**
+	 * Message one employee directly. It goes into their next task's brief (a turn that is already running can't
+	 * be interrupted), and the orchestrator is told so it can plan around it.
+	 */
+	tellEmployee(employeeId: string, text: string): void {
+		if (isFinished(this.state.status)) return;
+		const employee = this.options.employees.find(e => e.id === employeeId);
+		if (!employee) return this.tell(text);
+		this.log(employeeId).push({kind: 'user', text, at: Date.now()});
+		this.messages.set(employeeId, [...(this.messages.get(employeeId) ?? []), text]);
+		this.emit('user', 'user', excerpt(text, 120), {to: employeeId, detail: text});
+		this.updates.push({kind: 'user', text: `The user sent ${employee.name} this message directly. It is added to ${employee.name}'s next task, so plan around it if it changes anything:\n${text}`});
+		this.pump();
+	}
+
+	/** Messages waiting for an employee's next task. */
+	hasPendingMessage(employeeId: string): boolean {
+		return (this.messages.get(employeeId)?.length ?? 0) > 0;
+	}
+
+	/**
+	 * Keep up with hires and firings made while the run is going. Someone with unfinished work stays on the
+	 * team until that work is done, so no task is left without an employee.
+	 */
+	syncTeam(next: Employee[]): void {
+		if (isFinished(this.state.status)) return;
+		const prev = this.options.employees;
+		const busy = (id: string) => this.state.tasks.some(t => t.assignee === id && ['blocked', 'ready', 'running'].includes(t.status));
+		const kept = prev.filter(p => !next.some(n => n.id === p.id) && busy(p.id));
+		const added = next.filter(n => !prev.some(p => p.id === n.id));
+		const removed = prev.filter(p => !next.some(n => n.id === p.id) && !busy(p.id));
+		this.options.employees = [...next, ...kept];
+		if (added.length + removed.length === 0) return;
+		for (const e of added) this.emit('hire', 'user', `hired ${e.name} (${e.role})`, {to: e.id});
+		for (const e of removed) this.emit('fire', 'user', `let ${e.name} go`, {to: e.id});
+		const lines = [...added.map(e => `${e.name} joined: ${e.role}. ${e.summary}`), ...removed.map(e => `${e.name} left the team.`)];
+		this.updates.push({kind: 'user', text: `The team changed:\n${lines.join('\n')}`});
+		this.pump();
+	}
+
+	/** Uncommitted changes in an employee's worktree right now, or undefined when they have none to show. */
+	liveDiff(employeeId: string): Promise<string | undefined> {
+		return this.iso?.liveDiff(employeeId) ?? Promise.resolve(undefined);
 	}
 
 	cancel(): void {
@@ -226,6 +291,7 @@ export class RunEngine {
 	pause(reason: 'you' | 'budget' = 'you'): void {
 		if (isFinished(this.state.status) || this.state.paused) return;
 		this.state.paused = {reason, at: Date.now()};
+		this.emit('pause', reason === 'budget' ? ORCHESTRATOR : 'user', reason === 'budget' ? `paused at $${this.state.costUsd.toFixed(2)}: run budget reached` : 'paused the run');
 		this.log(ORCHESTRATOR).push({
 			kind: 'note',
 			text: reason === 'budget' ? `Paused: this run has cost $${this.state.costUsd.toFixed(2)}, reaching its budget.` : 'Paused by you.',
@@ -237,12 +303,21 @@ export class RunEngine {
 		if (!this.state.paused) return;
 		if (this.state.paused.reason === 'budget') this.budgetLimit = this.state.costUsd + (this.options.runBudget ?? 0);
 		this.state.paused = undefined;
+		this.emit('resume', 'user', 'resumed the run');
 		this.log(ORCHESTRATOR).push({kind: 'note', text: 'Resumed.'});
 		this.pump();
 	}
 
-	private spend(costUsd: number | undefined): void {
-		this.state.costUsd += costUsd ?? 0;
+	/** Add a turn's usage to the run (and to its task). Pauses the run when the budget is reached. */
+	private spend(usage: {costUsd?: number; inputTokens?: number; outputTokens?: number}, task?: Task): void {
+		const tokens = (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0);
+		this.state.costUsd += usage.costUsd ?? 0;
+		this.state.tokens += tokens;
+		if (task) {
+			task.costUsd = (task.costUsd ?? 0) + (usage.costUsd ?? 0);
+			task.tokens = (task.tokens ?? 0) + tokens;
+		}
+
 		if (this.state.costUsd >= this.budgetLimit) this.pause('budget');
 	}
 
@@ -300,7 +375,7 @@ export class RunEngine {
 		this.turns.delete(ORCHESTRATOR);
 		state.orchestrator.working = false;
 		if (recorder.sessionId) state.orchestrator.sessionId = recorder.sessionId;
-		this.spend(recorder.usage.costUsd);
+		this.spend(recorder.usage);
 		recorder.finish(outcome);
 		if (isFinished(state.status)) return;
 		if (!outcome.ok) return this.end('failed', `The orchestrator stopped: ${outcome.error ?? 'unknown error'}`);
@@ -321,8 +396,15 @@ export class RunEngine {
 
 		const name = (id: string) => this.options.employees.find(e => e.id === id)?.name ?? id;
 		const {accepted, errors} = validateNewTasks(decision.tasks, state.tasks, this.options.employees);
+		const planned = state.tasks.length === 0;
 		state.tasks.push(...accepted);
 		for (const task of accepted) log.push({kind: 'note', text: `New task ${task.id} → ${name(task.assignee)}: ${task.title}`});
+		if (accepted.length) {
+			const lines = accepted.map(t => `${t.id} → ${name(t.assignee)}: ${t.title}${t.dependsOn.length ? ` (after ${t.dependsOn.join(', ')})` : ''}`);
+			const count = `${accepted.length} task${accepted.length === 1 ? '' : 's'}`;
+			if (planned) this.emit('plan', ORCHESTRATOR, `planned ${count}`, {detail: [decision.note, ...lines].filter(Boolean).join('\n')});
+			else this.emit('replan', ORCHESTRATOR, decision.note ? `re-planned: ${excerpt(decision.note, 140)}` : `added ${count}`, {detail: lines.join('\n')});
+		} else if (decision.note && !decision.finish) this.emit('decision', ORCHESTRATOR, excerpt(decision.note, 160), {detail: decision.note});
 
 		let revised = 0;
 		for (const {task: id, feedback} of decision.revisions) {
@@ -337,6 +419,7 @@ export class RunEngine {
 				task.error = undefined;
 				revised++;
 				log.push({kind: 'note', text: `Sent ${id} back to ${name(task.assignee)} for changes`});
+				this.emit('revision', ORCHESTRATOR, `sent ${id} back for changes (${task.revisions}/${LIMITS.revisionsPerTask})`, {to: task.assignee, taskId: id, detail: feedback});
 			}
 		}
 
@@ -349,6 +432,7 @@ export class RunEngine {
 				task.status = 'cancelled';
 				cancelled++;
 				log.push({kind: 'note', text: `Cancelled ${id}`});
+				this.emit('cancel', ORCHESTRATOR, `cancelled ${id}`, {to: task.assignee, taskId: id});
 			}
 		}
 
@@ -420,6 +504,18 @@ export class RunEngine {
 		task.startedAt = Date.now();
 		task.endedAt = undefined;
 
+		// First attempt only: a revision isn't a new handoff.
+		if (task.revisions === 0) {
+			for (const depId of task.dependsOn) {
+				const dep = state.tasks.find(t => t.id === depId);
+				if (dep?.status === 'done' && dep.assignee !== task.assignee) {
+					this.emit('handoff', dep.assignee, dep.title, {to: task.assignee, taskId: task.id, detail: excerpt(dep.report, 500)});
+				}
+			}
+		}
+
+		this.emit('start', employee.id, task.revisions ? `${task.title} (revision ${task.revisions})` : task.title, {taskId: task.id, detail: task.feedback});
+
 		const binary = options.binaryFor(employee.provider);
 		const log = this.log(employee.id);
 		log.push({kind: 'brief', taskId: task.id, title: task.title, text: task.feedback ? `${task.brief}\n\nRequested changes:\n${task.feedback}` : task.brief});
@@ -451,12 +547,15 @@ export class RunEngine {
 			return;
 		}
 
+		const direct = this.messages.get(employee.id);
+		this.messages.delete(employee.id);
+		const fromUser = direct?.length ? `\n\nMessages from the user, sent to you directly:\n${direct.map(m => `- ${m}`).join('\n')}` : '';
 		const recorder = new TurnRecorder(log, () => this.changed());
 		const turn = runTurn(
 			binary,
 			employee.provider,
 			{
-				prompt: taskPrompt(task, state.tasks, options.employees, space.cwd, options.branch, {isolated: this.iso !== undefined, conflicts}),
+				prompt: taskPrompt(task, state.tasks, options.employees, space.cwd, options.branch, {isolated: this.iso !== undefined, conflicts}) + fromUser,
 				cwd: space.cwd,
 				systemPrompt: employeeSystemPrompt(employee),
 				sessionId: state.employeeSessions[employee.id],
@@ -482,7 +581,7 @@ export class RunEngine {
 		clearTimeout(timer);
 		this.turns.delete(task.id);
 		if (recorder.sessionId) state.employeeSessions[employee.id] = recorder.sessionId;
-		this.spend(recorder.usage.costUsd);
+		this.spend(recorder.usage, task);
 		recorder.finish(outcome);
 		task.endedAt = Date.now();
 		task.report = recorder.finalText;
@@ -502,13 +601,19 @@ export class RunEngine {
 			try {
 				const merge = await this.iso.finish(employee.id, task.id, space.start);
 				task.files = merge.files;
+				task.patch = merge.patch;
 				if (merge.conflicts) {
 					status = 'failed';
 					task.conflicts = merge.conflicts;
 					error = `Its changes clash with work already merged from other tasks (${merge.conflicts.join(', ')}), so they were not applied.`;
 					log.push({kind: 'error', message: error});
+					this.emit('conflict', employee.id, `${task.id} clashes with merged work`, {taskId: task.id, detail: merge.conflicts.join('\n')});
 				} else if (merge.files.length) {
 					log.push({kind: 'note', text: `Merged into your working tree: ${merge.files.join(', ')}`});
+					this.emit('merge', employee.id, `merged ⎇ ${task.id} → ${options.branch ?? 'working tree'}`, {
+						taskId: task.id,
+						detail: `${merge.files.length} file${merge.files.length === 1 ? '' : 's'} · no conflicts\n${merge.files.join('\n')}`,
+					});
 				}
 
 				if (merge.unapplied?.length) {
@@ -531,6 +636,7 @@ export class RunEngine {
 		task.status = status;
 		task.error = error;
 		if (status === 'done') task.feedback = undefined;
+		this.emit(status === 'done' ? 'done' : 'failed', employee.id, task.title, {taskId: task.id, detail: status === 'done' ? excerpt(task.report, 600) : (error ?? excerpt(task.report, 400))});
 		this.updates.push({kind: 'task', task: {...task}});
 		this.pump();
 	}
@@ -540,6 +646,7 @@ export class RunEngine {
 		if (isFinished(state.status)) return;
 		state.status = status;
 		state.summary = summary;
+		this.emit('finish', ORCHESTRATOR, status === 'done' ? 'finished the run' : status === 'cancelled' ? 'run stopped' : 'run failed', {detail: summary});
 		if (state.unapplied.length && state.isolation?.mode === 'worktrees') {
 			const files = state.unapplied.join(' ');
 			state.summary += `\n\nThese files changed in your working tree during the run, so the team's versions were not written over them: ${files}. To take the team's versions: git checkout ${state.isolation.ref} -- ${files}`;

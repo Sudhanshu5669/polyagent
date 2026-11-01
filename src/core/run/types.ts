@@ -24,6 +24,45 @@ export interface Task {
 	conflicts?: string[];
 	startedAt?: number;
 	endedAt?: number;
+	/** Input + output tokens spent on this task, across revisions. */
+	tokens?: number;
+	costUsd?: number;
+	/** What the task changed, as a unified diff (when employees work in worktrees). Capped. */
+	patch?: string;
+}
+
+export type RunEventKind =
+	| 'plan'
+	| 'replan'
+	| 'decision'
+	| 'start'
+	| 'done'
+	| 'failed'
+	| 'handoff'
+	| 'merge'
+	| 'conflict'
+	| 'revision'
+	| 'cancel'
+	| 'pause'
+	| 'resume'
+	| 'user'
+	| 'hire'
+	| 'fire'
+	| 'finish';
+
+/** One thing worth telling someone who wasn't watching: the story of the run, not its raw log. */
+export interface RunEvent {
+	id: number;
+	at: number;
+	kind: RunEventKind;
+	/** Who did it: 'orchestrator', 'user' or an employee id. */
+	agent: string;
+	/** The other party: who a handoff or message goes to. */
+	to?: string;
+	text: string;
+	/** Longer text, shown when the event is expanded. */
+	detail?: string;
+	taskId?: string;
 }
 
 export type RunStatus = 'planning' | 'awaiting-approval' | 'running' | 'done' | 'failed' | 'cancelled';
@@ -49,6 +88,10 @@ export interface RunState {
 	/** One provider session per employee per run, so later tasks keep earlier context. */
 	employeeSessions: Record<string, string>;
 	costUsd: number;
+	/** Input + output tokens used so far, as reported by the CLIs. */
+	tokens: number;
+	/** The run's story so far, oldest first. */
+	events: RunEvent[];
 	/** How employees share the repository: their own worktrees in parallel, or the working tree one at a time. */
 	isolation?: {mode: 'worktrees'; ref: string; base: string} | {mode: 'shared'; reason: string};
 	/** Merged files that couldn't be written to the user's working tree because they changed there during the run. */
